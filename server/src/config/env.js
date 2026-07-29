@@ -72,6 +72,14 @@ export const env = {
       baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
       defaultModel: process.env.OPENAI_DEFAULT_MODEL || 'gpt-4o-mini',
     },
+    // Self-hosted open model via Ollama (your own LLM; no third-party API).
+    ollama: {
+      enabled: bool(process.env.OLLAMA_ENABLED, false),
+      baseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
+      model: process.env.OLLAMA_MODEL || 'llama3.2:3b',
+      models: list(process.env.OLLAMA_MODELS),
+      contextWindow: Number(process.env.OLLAMA_CONTEXT_WINDOW || 8192),
+    },
   },
 
   rateLimit: {
