@@ -6,6 +6,7 @@ import {
   updateConversationSchema,
   conversationIdSchema,
   listConversationsSchema,
+  editMessageSchema,
 } from '../../validators/conversation.validator.js';
 import { chatStreamSchema } from '../../validators/ai.validator.js';
 import * as conversationController from '../../controllers/conversation.controller.js';
@@ -19,6 +20,11 @@ router.post('/', validate(createConversationSchema), conversationController.crea
 router.get('/', validate(listConversationsSchema), conversationController.list);
 router.get('/:id', validate(conversationIdSchema), conversationController.getOne);
 router.get('/:id/messages', validate(conversationIdSchema), conversationController.messages);
+router.post(
+  '/:id/messages/:messageId/edit',
+  validate(editMessageSchema),
+  conversationController.editMessage,
+);
 router.patch('/:id', validate(updateConversationSchema), conversationController.update);
 router.delete('/:id', validate(conversationIdSchema), conversationController.remove);
 

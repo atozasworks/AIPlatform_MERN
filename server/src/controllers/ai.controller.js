@@ -4,6 +4,8 @@ import { aiGateway } from '../services/ai/AIGateway.js';
 import {
   getOwnedConversation,
   buildProviderMessages,
+  buildActivePath,
+  getMessages,
 } from '../services/conversation.service.js';
 import { Conversation } from '../models/Conversation.js';
 import { Message } from '../models/Message.js';
@@ -21,7 +23,7 @@ export const listModels = asyncHandler(async (_req, res) => {
  * prevents duplicate user messages via an idempotency key (§5, §22).
  *
  * SSE event protocol:
- *   event: meta   data: { provider, model, userMessageId, assistantMessageId }
+ *   event: meta   data: { provider, model, userMessageId, assistantMessageId, parentMessageId }
  *   event: token  data: { text }
  *   event: title  data: { title }            (once, after first exchange)
  *   event: done   data: { usage, model }
@@ -29,9 +31,25 @@ export const listModels = asyncHandler(async (_req, res) => {
  */
 export const streamChat = asyncHandler(async (req, res) => {
   const userId = req.user._id;
-  const { content, provider: reqProvider, model: reqModel, clientMessageId } = req.body;
+  const {
+    content,
+    provider: reqProvider,
+    model: reqModel,
+    clientMessageId,
+    parentMessageId: reqParentId,
+  } = req.body;
 
   const conversation = await getOwnedConversation(userId, req.params.id);
+
+  // Resolve where this user message hangs in the tree.
+  // undefined → continue latest branch; null → root sibling; id → that parent.
+  let parentMessageId = reqParentId;
+  if (parentMessageId === undefined) {
+    const existing = await getMessages(userId, conversation._id);
+    const path = buildActivePath(existing);
+    const last = path[path.length - 1];
+    parentMessageId = last ? last.id : null;
+  }
 
   // Idempotency: if we already stored this client message, don't duplicate it.
   let userMessage = null;
@@ -50,6 +68,7 @@ export const streamChat = asyncHandler(async (req, res) => {
       role: 'user',
       content,
       status: 'complete',
+      parentMessage: parentMessageId || null,
       ...(clientMessageId ? { clientMeta: { clientMessageId } } : {}),
     });
   }
@@ -95,6 +114,7 @@ export const streamChat = asyncHandler(async (req, res) => {
     model,
     userMessageId: String(userMessage._id),
     assistantMessageId: String(assistantMessage._id),
+    parentMessageId: parentMessageId || null,
   });
 
   // Abort generation when the client disconnects (stop button / navigation).
@@ -110,7 +130,9 @@ export const streamChat = asyncHandler(async (req, res) => {
   let finalModel = model;
 
   try {
-    const messages = await buildProviderMessages(conversation);
+    const messages = await buildProviderMessages(conversation, {
+      leafMessageId: userMessage._id,
+    });
     const stream = provider.streamResponse({
       model,
       messages,
