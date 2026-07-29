@@ -80,6 +80,18 @@ export const env = {
       models: list(process.env.OLLAMA_MODELS),
       contextWindow: Number(process.env.OLLAMA_CONTEXT_WINDOW || 8192),
     },
+    // Self-hosted open model via llama.cpp's `llama-server` (OpenAI-compatible
+    // endpoint at {baseUrl}/v1). Your own LLM; no third-party API, no per-token cost.
+    llamacpp: {
+      enabled: bool(process.env.LLAMACPP_ENABLED, false),
+      baseUrl: process.env.LLAMACPP_BASE_URL || 'http://127.0.0.1:8080',
+      // llama-server needs no key by default; only set if started with --api-key.
+      apiKey: process.env.LLAMACPP_API_KEY || 'llama.cpp',
+      // llama-server serves a single loaded model; this id is mainly a display label.
+      model: process.env.LLAMACPP_MODEL || 'local-gguf',
+      models: list(process.env.LLAMACPP_MODELS),
+      contextWindow: Number(process.env.LLAMACPP_CONTEXT_WINDOW || 8192),
+    },
   },
 
   rateLimit: {
