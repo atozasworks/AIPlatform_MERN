@@ -1,0 +1,37 @@
+{
+  "name": "aichat-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AiChat backend — Express API, AI gateway, streaming.",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "compression": "^1.7.4",
+    "cookie": "^0.7.2",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "express-mongo-sanitize": "^2.2.0",
+    "express-rate-limit": "^7.4.1",
+    "helmet": "^8.0.0",
+    "hpp": "^0.2.3",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.8.0",
+    "nanoid": "^5.0.8",
+    "pino": "^9.5.0",
+    "pino-http": "^10.3.0",
+    "rate-limit-redis": "^4.2.0",
+    "socket.io": "^4.8.1",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=18.18.0"
+  }
+}
