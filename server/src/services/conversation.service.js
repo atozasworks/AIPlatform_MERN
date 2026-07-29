@@ -3,6 +3,13 @@ import { Message } from '../models/Message.js';
 import { AppError } from '../utils/AppError.js';
 import { aiGateway } from './ai/AIGateway.js';
 
+/** Lean docs only have `_id`; map to `id` so the client matches mongoose toJSON. */
+function withId(doc) {
+  if (!doc) return doc;
+  const { _id, __v, ...rest } = doc;
+  return { id: String(_id), ...rest };
+}
+
 /**
  * Conversation + message data access. Every query is scoped by `user` so users
  * can never read or mutate another user's data (§21 cross-user isolation).
@@ -45,14 +52,15 @@ export async function listConversations(userId, { search, archived, cursor, limi
   const hasMore = items.length > limit;
   const page = hasMore ? items.slice(0, limit) : items;
   const nextCursor = hasMore ? page[page.length - 1].lastMessageAt : null;
-  return { items: page, nextCursor, hasMore };
+  return { items: page.map(withId), nextCursor, hasMore };
 }
 
 export async function getMessages(userId, conversationId) {
   await getOwnedConversation(userId, conversationId);
-  return Message.find({ conversation: conversationId, deletedAt: null })
+  const msgs = await Message.find({ conversation: conversationId, deletedAt: null })
     .sort({ createdAt: 1 })
     .lean();
+  return msgs.map(withId);
 }
 
 export async function updateConversation(userId, conversationId, patch) {
