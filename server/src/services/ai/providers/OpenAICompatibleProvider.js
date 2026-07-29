@@ -20,6 +20,8 @@ export class OpenAICompatibleProvider extends BaseProvider {
     this.baseUrl = (config.baseUrl || '').replace(/\/$/, '');
     this.defaultModel = config.defaultModel;
     this.models = config.models || [];
+    // Optional per-provider cap applied only when the caller omits maxTokens.
+    this.defaultMaxTokens = config.defaultMaxTokens ?? null;
   }
 
   isAvailable() {
@@ -40,12 +42,13 @@ export class OpenAICompatibleProvider extends BaseProvider {
   }
 
   #payload(model, messages, options, stream) {
+    const maxTokens = options.maxTokens ?? this.defaultMaxTokens;
     return {
       model: model || this.defaultModel,
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
       stream,
       ...(options.temperature != null ? { temperature: options.temperature } : {}),
-      ...(options.maxTokens != null ? { max_tokens: options.maxTokens } : {}),
+      ...(maxTokens != null ? { max_tokens: maxTokens } : {}),
     };
   }
 

@@ -91,6 +91,9 @@ export const env = {
       model: process.env.LLAMACPP_MODEL || 'local-gguf',
       models: list(process.env.LLAMACPP_MODELS),
       contextWindow: Number(process.env.LLAMACPP_CONTEXT_WINDOW || 8192),
+      // Cap generation length so slow local CPU inference can't run away and
+      // stall/reset the SSE stream. Applied when the caller doesn't specify.
+      maxTokens: Number(process.env.LLAMACPP_MAX_TOKENS || 512),
     },
   },
 

@@ -38,6 +38,7 @@ export class LlamaCppProvider extends OpenAICompatibleProvider {
       apiKey: env.ai.llamacpp.apiKey,
       baseUrl: `${env.ai.llamacpp.baseUrl.replace(/\/$/, '')}/v1`,
       defaultModel: env.ai.llamacpp.model,
+      defaultMaxTokens: env.ai.llamacpp.maxTokens,
       models,
     });
 
