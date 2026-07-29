@@ -27,6 +27,9 @@ uploads/
 tmp/
 coverage/
 
+# Local llama.cpp CPU build (downloaded binaries; not source)
+.llamacpp-cpu/
+
 # OS / editor
 .DS_Store
 Thumbs.db
