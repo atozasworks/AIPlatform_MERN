@@ -1,3 +1,7 @@
+import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import compression from 'compression';
@@ -15,6 +19,12 @@ import {
 import { globalLimiter } from './middleware/rateLimit.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import v1Routes from './routes/v1/index.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Built frontend served by this server in production
+// (e.g. htdocs/atozasai.com/server/dist -> ../dist relative to src/).
+const distPath = path.resolve(__dirname, '../dist');
 
 /**
  * Builds and configures the Express application (middleware order matters).
@@ -49,6 +59,14 @@ export function createApp() {
   );
 
   app.use('/api/v1', globalLimiter, v1Routes);
+
+  // Serve the built frontend (dist) and fall back to index.html for SPA routes.
+  if (fs.existsSync(distPath)) {
+    app.use(express.static(distPath));
+    app.get(/^(?!\/api).*/, (_req, res) =>
+      res.sendFile(path.join(distPath, 'index.html')),
+    );
+  }
 
   app.use(notFoundHandler);
   app.use(errorHandler);

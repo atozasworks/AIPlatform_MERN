@@ -10,5 +10,7 @@ export const chatStreamSchema = {
     model: z.string().trim().optional(),
     // Idempotency key prevents duplicate assistant responses on retry/refresh (§22).
     clientMessageId: z.string().trim().max(64).optional(),
+    // Parent in the message tree (null = root). Used for continue + edit siblings.
+    parentMessageId: objectId.nullable().optional(),
   }),
 };

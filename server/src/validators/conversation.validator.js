@@ -30,6 +30,13 @@ export const conversationIdSchema = {
   params: z.object({ id: objectId }),
 };
 
+export const editMessageSchema = {
+  params: z.object({ id: objectId, messageId: objectId }),
+  body: z.object({
+    content: z.string().trim().min(1).max(32000),
+  }),
+};
+
 export const listConversationsSchema = {
   query: z.object({
     search: z.string().trim().max(200).optional(),

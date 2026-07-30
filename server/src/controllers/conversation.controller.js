@@ -7,6 +7,7 @@ import {
   getMessages,
   updateConversation,
   softDeleteConversation,
+  prepareMessageEdit,
 } from '../services/conversation.service.js';
 
 export const create = asyncHandler(async (req, res) => {
@@ -39,4 +40,10 @@ export const update = asyncHandler(async (req, res) => {
 export const remove = asyncHandler(async (req, res) => {
   await softDeleteConversation(req.user._id, req.params.id);
   return sendSuccess(res, { ok: true });
+});
+
+/** Returns parentMessageId so the client can open a sibling edit branch. */
+export const editMessage = asyncHandler(async (req, res) => {
+  const prep = await prepareMessageEdit(req.user._id, req.params.id, req.params.messageId);
+  return sendSuccess(res, { ...prep, content: req.body.content });
 });

@@ -1,14 +1,19 @@
 import { useState } from 'react';
 import Markdown from './Markdown.jsx';
+import { useChat } from '../../store/chat.js';
 
 /**
- * Renders a single message. User messages are shown as plain text on the right;
- * assistant messages render Markdown on the left with the model attribution and
- * copy/feedback actions (§5). A streaming caret is shown while tokens arrive.
+ * Renders a single message. User bubbles include ChatGPT-style copy / edit /
+ * version navigation (`< 1/2 >`). Assistant bubbles render Markdown.
  */
 export default function MessageBubble({ message }) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
+  const isStreaming = useChat((s) => s.isStreaming);
+  const editMessage = useChat((s) => s.editMessage);
+  const selectVersion = useChat((s) => s.selectVersion);
 
   const copy = async () => {
     await navigator.clipboard.writeText(message.content);
@@ -16,11 +21,104 @@ export default function MessageBubble({ message }) {
     setTimeout(() => setCopied(false), 1500);
   };
 
+  const startEdit = () => {
+    setDraft(message.content);
+    setEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setDraft(message.content);
+    setEditing(false);
+  };
+
+  const saveEdit = async () => {
+    const text = draft.trim();
+    if (!text || text === message.content || isStreaming) {
+      setEditing(false);
+      return;
+    }
+    if (String(message.id).startsWith('tmp-')) return;
+    setEditing(false);
+    await editMessage(message.id, text);
+  };
+
+  const versionCount = message.versionCount || 0;
+  const versionIndex = (message.versionIndex ?? 0) + 1;
+  const showVersions = isUser && versionCount > 1 && !editing;
+
   if (isUser) {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-brand-600 px-4 py-2.5 text-white">
-          {message.content}
+        <div className="max-w-[80%]">
+          {editing ? (
+            <div className="rounded-2xl rounded-br-md border border-brand-300 bg-white p-2 dark:border-brand-700 dark:bg-slate-900">
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                rows={Math.min(8, Math.max(2, draft.split('\n').length))}
+                className="w-full resize-y rounded-lg bg-transparent px-2 py-1.5 text-sm outline-none"
+                autoFocus
+              />
+              <div className="mt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={cancelEdit}
+                  className="rounded-lg px-3 py-1.5 text-xs text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={saveEdit}
+                  disabled={!draft.trim() || isStreaming}
+                  className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-40"
+                >
+                  Save & submit
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-brand-600 px-4 py-2.5 text-white">
+                {message.content}
+              </div>
+              {!isStreaming && (
+                <div className="mt-1.5 flex items-center justify-end gap-1 text-slate-400">
+                  <IconButton onClick={copy} title={copied ? 'Copied' : 'Copy'} label={copied ? 'Copied' : 'Copy'}>
+                    {copied ? <CheckIcon /> : <CopyIcon />}
+                  </IconButton>
+                  {!String(message.id).startsWith('tmp-') && (
+                    <IconButton onClick={startEdit} title="Edit" label="Edit">
+                      <EditIcon />
+                    </IconButton>
+                  )}
+                  {showVersions && (
+                    <div className="ml-1 flex items-center gap-0.5 text-xs tabular-nums">
+                      <IconButton
+                        onClick={() => selectVersion(message.id, -1)}
+                        disabled={versionIndex <= 1}
+                        title="Previous version"
+                        label="Previous version"
+                      >
+                        <ChevronLeftIcon />
+                      </IconButton>
+                      <span className="min-w-[2.5rem] text-center text-slate-500">
+                        {versionIndex}/{versionCount}
+                      </span>
+                      <IconButton
+                        onClick={() => selectVersion(message.id, 1)}
+                        disabled={versionIndex >= versionCount}
+                        title="Next version"
+                        label="Next version"
+                      >
+                        <ChevronRightIcon />
+                      </IconButton>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
     );
@@ -48,16 +146,73 @@ export default function MessageBubble({ message }) {
         )}
 
         {!streaming && message.content && (
-          <div className="mt-1.5 flex items-center gap-3 text-xs text-slate-400">
-            {message.model && <span>{message.model}</span>}
-            <button onClick={copy} className="hover:text-slate-600 dark:hover:text-slate-200">
-              {copied ? 'Copied' : 'Copy'}
-            </button>
+          <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-400">
+            {message.model && <span className="mr-1">{message.model}</span>}
+            <IconButton onClick={copy} title={copied ? 'Copied' : 'Copy'} label={copied ? 'Copied' : 'Copy'}>
+              {copied ? <CheckIcon /> : <CopyIcon />}
+            </IconButton>
             {message.status === 'stopped' && <span className="italic">stopped</span>}
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+function IconButton({ onClick, title, label, disabled, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={label}
+      className="inline-flex h-7 w-7 items-center justify-center rounded-md hover:bg-slate-100 hover:text-slate-700 disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent dark:hover:bg-slate-800 dark:hover:text-slate-200"
+    >
+      {children}
+    </button>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+      <rect x="9" y="9" width="13" height="13" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+function EditIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function ChevronLeftIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+      <path d="m15 18-6-6 6-6" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+      <path d="m9 18 6-6-6-6" />
+    </svg>
   );
 }
 
