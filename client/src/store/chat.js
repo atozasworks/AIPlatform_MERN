@@ -14,8 +14,8 @@ export const useChat = create((set, get) => ({
   branchChoices: {},
   messages: [],
   models: [],
-  selectedProvider: 'auto',
-  selectedModel: '',
+  selectedProvider: 'llamacpp',
+  selectedModel: 'local-gguf',
   isStreaming: false,
   _stream: null,
 

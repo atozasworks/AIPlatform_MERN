@@ -7,13 +7,11 @@ import Composer from '../components/chat/Composer.jsx';
 
 export default function ChatPage() {
   const loadConversations = useChat((s) => s.loadConversations);
-  const loadModels = useChat((s) => s.loadModels);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     loadConversations();
-    loadModels();
-  }, [loadConversations, loadModels]);
+  }, [loadConversations]);
 
   return (
     <div className="flex h-full overflow-hidden">

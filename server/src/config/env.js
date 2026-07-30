@@ -60,8 +60,8 @@ export const env = {
   },
 
   ai: {
-    defaultProvider: process.env.DEFAULT_AI_PROVIDER || 'mock',
-    defaultModel: process.env.DEFAULT_AI_MODEL || 'mock-basic',
+    defaultProvider: process.env.DEFAULT_AI_PROVIDER || 'llamacpp',
+    defaultModel: process.env.DEFAULT_AI_MODEL || 'local-gguf',
     groq: {
       apiKey: process.env.GROQ_API_KEY || '',
       baseUrl: process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1',

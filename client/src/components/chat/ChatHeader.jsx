@@ -1,4 +1,3 @@
-import ModelSelector from './ModelSelector.jsx';
 import ThemeToggle from '../ui/ThemeToggle.jsx';
 
 export default function ChatHeader({ onToggleSidebar }) {
@@ -11,7 +10,6 @@ export default function ChatHeader({ onToggleSidebar }) {
       >
         ☰
       </button>
-      <ModelSelector />
       <div className="ml-auto">
         <ThemeToggle />
       </div>
