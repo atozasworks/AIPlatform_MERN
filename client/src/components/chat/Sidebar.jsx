@@ -42,6 +42,12 @@ export default function Sidebar({ open, onClose }) {
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
+        <div className="flex items-center gap-2 px-4 pt-4 pb-1">
+          <span className="text-lg font-bold tracking-tight">
+            Atozas<span className="text-brand-600">Ai</span>
+          </span>
+        </div>
+
         <div className="flex items-center gap-2 p-3">
           <button
             onClick={handleNew}
