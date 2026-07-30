@@ -36,3 +36,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+server.zip
+client/dist.zip
+.llamacpp-cpu.zip
