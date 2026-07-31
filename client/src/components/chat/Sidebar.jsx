@@ -42,7 +42,7 @@ export default function Sidebar({ open, onClose }) {
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="flex items-center justify-between gap-2 bg-[#122a5e] px-3 py-3">
+        <div className="flex items-center justify-between gap-2 bg-gradient-to-r from-indigo-600 via-blue-600 to-violet-600 px-3 py-3 dark:from-indigo-900 dark:via-blue-900 dark:to-violet-900">
           <div className="flex items-center rounded-full bg-white px-3 py-1.5 shadow-sm">
             <img
               src="/logo.png"
