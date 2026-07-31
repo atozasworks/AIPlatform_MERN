@@ -118,7 +118,7 @@ export default function Composer() {
         )}
       </div>
       <p className="mx-auto mt-2 max-w-3xl text-center text-xs text-slate-400">
-        AiChat can make mistakes. Verify important information.
+        AtozasAi can make mistakes. Verify important information.
       </p>
     </div>
   );
