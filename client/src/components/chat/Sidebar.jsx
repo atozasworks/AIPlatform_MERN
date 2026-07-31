@@ -42,9 +42,16 @@ export default function Sidebar({ open, onClose }) {
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
-        <div className="flex items-center gap-2 px-4 pt-4 pb-1">
-          <span className="text-lg font-bold tracking-tight">
-            Atozas<span className="text-brand-600">Ai</span>
+        <div className="flex items-center justify-between gap-2 bg-[#122a5e] px-3 py-3">
+          <div className="flex items-center rounded-full bg-white px-3 py-1.5 shadow-sm">
+            <img
+              src="/logo.png"
+              alt="AtozasAi"
+              className="h-9 w-auto object-contain"
+            />
+          </div>
+          <span className="rounded-md bg-red-500 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm">
+            Alpha Version
           </span>
         </div>
 

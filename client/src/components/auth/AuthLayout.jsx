@@ -8,9 +8,7 @@ export default function AuthLayout({ title, subtitle, children }) {
       </div>
       <div className="w-full max-w-md animate-fade-in">
         <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-brand-600 text-2xl font-bold text-white">
-            A
-          </div>
+          <img src="/logo.png" alt="AtozasAi" className="mb-3 h-16 w-auto" />
           <h1 className="text-2xl font-semibold">{title}</h1>
           {subtitle && <p className="mt-1 text-slate-500">{subtitle}</p>}
         </div>
@@ -18,7 +16,7 @@ export default function AuthLayout({ title, subtitle, children }) {
           {children}
         </div>
         <p className="mt-6 text-center text-xs text-slate-400">
-          AiChat orchestrates official AI provider APIs. Responses may be inaccurate — verify
+          AtozasAi orchestrates official AI provider APIs. Responses may be inaccurate — verify
           important information.
         </p>
       </div>
