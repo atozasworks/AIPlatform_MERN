@@ -26,10 +26,19 @@ export default function ChatPage() {
 
       <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
-      <main className="flex min-w-0 flex-1 flex-col">
-        <ChatHeader onToggleSidebar={() => setSidebarOpen((v) => !v)} />
-        <MessageList />
-        <Composer />
+      <main className="relative flex min-w-0 flex-1 flex-col bg-slate-50 dark:bg-slate-950">
+        {/* Decorative background blobs */}
+        <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
+          <div className="absolute -left-20 top-10 h-72 w-72 rounded-full bg-blue-400/10 blur-3xl dark:bg-blue-500/10" />
+          <div className="absolute -right-24 top-1/3 h-80 w-80 rounded-full bg-violet-400/10 blur-3xl dark:bg-violet-500/10" />
+          <div className="absolute bottom-0 left-1/3 h-72 w-72 rounded-full bg-indigo-400/10 blur-3xl dark:bg-indigo-500/10" />
+        </div>
+
+        <div className="relative z-10 flex min-h-0 flex-1 flex-col">
+          <ChatHeader onToggleSidebar={() => setSidebarOpen((v) => !v)} />
+          <MessageList />
+          <Composer />
+        </div>
       </main>
     </div>
   );
