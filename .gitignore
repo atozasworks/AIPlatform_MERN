@@ -33,3 +33,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+.llamacpp-cpu/
+server/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf
+server/start-llama.ps1
