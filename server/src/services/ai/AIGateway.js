@@ -2,6 +2,7 @@ import { MockProvider } from './providers/MockProvider.js';
 import { OpenAIProvider } from './providers/OpenAIProvider.js';
 import { GroqProvider } from './providers/GroqProvider.js';
 import { LlamaCppProvider } from './providers/LlamaCppProvider.js';
+import { OllamaProvider } from './providers/OllamaProvider.js';
 import { AppError } from '../../utils/AppError.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
@@ -17,6 +18,7 @@ class AIGateway {
     /** @type {Map<string, import('./BaseProvider.js').BaseProvider>} */
     this.providers = new Map();
     this.#register(new MockProvider());
+    this.#register(new OllamaProvider());
     this.#register(new LlamaCppProvider());
     this.#register(new GroqProvider());
     this.#register(new OpenAIProvider());
