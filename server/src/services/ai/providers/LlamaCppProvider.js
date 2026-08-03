@@ -1,53 +1,79 @@
 import { OpenAICompatibleProvider } from './OpenAICompatibleProvider.js';
 import { env } from '../../../config/env.js';
+import { getModelRecord } from '../modelRegistry.js';
 
 /**
- * llama.cpp provider — runs YOUR OWN open-source GGUF model locally via
- * `llama-server` (part of llama.cpp). No third-party API, no per-token cost,
- * fully private. `llama-server` exposes an OpenAI-compatible endpoint at
- * {baseUrl}/v1, so it reuses the shared transport.
+ * The production inference engine: Qwen3-4B-Q4_K_M served by `llama-server`
+ * bound to 127.0.0.1 on the ATOZAS VPS. CPU-only, no GPU, no external egress.
  *
- * Start the server, for example:
- *   llama-server -m ./models/Llama-3.2-3B-Instruct-Q4_K_M.gguf --port 8080
- *
- * Availability is gated by LLAMACPP_ENABLED so the platform doesn't advertise
- * the provider until you've built llama.cpp and loaded a model.
+ * Non-thinking mode is the default. Qwen3 accepts `chat_template_kwargs` to
+ * disable reasoning; `/no_think` in the prompt is the fallback for builds that
+ * predate that flag. Either way `OpenAICompatibleProvider` strips any <think>
+ * block that still appears, so hidden reasoning cannot reach the browser.
  */
 export class LlamaCppProvider extends OpenAICompatibleProvider {
   constructor() {
-    const models = (
-      env.ai.llamacpp.models.length ? env.ai.llamacpp.models : [env.ai.llamacpp.model]
-    ).map((id) => ({
-      id,
-      name: id,
-      capabilities: ['chat'],
-      contextWindow: env.ai.llamacpp.contextWindow,
-      vision: false,
-      fileAnalysis: true,
-      webSearch: false,
-      imageGeneration: false,
-      speed: 'local',
-      costPer1kTokens: 0,
-    }));
+    const cfg = env.ai.llamacpp;
+    const record = getModelRecord(cfg.model);
 
     super({
       id: 'llamacpp',
-      label: 'Local (llama.cpp)',
-      // llama-server ignores auth by default, but the shared transport sends a
-      // Bearer header; a non-empty value keeps that code path uniform.
-      apiKey: env.ai.llamacpp.apiKey,
-      baseUrl: `${env.ai.llamacpp.baseUrl.replace(/\/$/, '')}/v1`,
-      defaultModel: env.ai.llamacpp.model,
-      defaultMaxTokens: env.ai.llamacpp.maxTokens,
-      models,
+      label: 'ATOZAS local (llama.cpp)',
+      apiKey: cfg.apiKey,
+      baseUrl: `${cfg.baseUrl}/v1`,
+      defaultModel: cfg.model,
+      contextWindow: cfg.contextWindow,
+      requestTimeoutMs: cfg.requestTimeoutMs,
+      extraBody: cfg.thinking ? {} : { chat_template_kwargs: { enable_thinking: false } },
+      models: [
+        {
+          id: cfg.model,
+          name: record?.name || cfg.model,
+          capabilities: ['chat'],
+          contextWindow: cfg.contextWindow,
+          vision: false,
+          fileAnalysis: true,
+          webSearch: false,
+          imageGeneration: false,
+          speed: 'local-cpu',
+          costPer1kTokens: 0,
+          license: record?.license || 'unknown',
+          selfHosted: true,
+        },
+      ],
     });
 
-    this.enabled = env.ai.llamacpp.enabled;
+    this.enabled = cfg.enabled;
+    // Root URL (no /v1) for llama-server's native /health, /props, /tokenize.
+    this.nativeBaseUrl = cfg.baseUrl;
   }
 
-  // Local server needs no API key; availability is controlled by the flag.
-  isAvailable() {
-    return this.enabled;
+  /**
+   * Reads llama-server's runtime configuration. Surfaces the actual context
+   * size and slot count so the admin endpoint reports what is really loaded
+   * rather than what the .env claims.
+   */
+  async getServerProps({ timeoutMs = 3000 } = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${this.nativeBaseUrl}/props`, {
+        headers: this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {},
+        signal: controller.signal,
+      });
+      if (!res.ok) return null;
+      const body = await res.json();
+      return {
+        contextSize: body.default_generation_settings?.n_ctx ?? null,
+        slots: body.total_slots ?? null,
+        modelPath: body.model_path ?? body.default_generation_settings?.model ?? null,
+        chatTemplate: typeof body.chat_template === 'string' ? 'loaded' : null,
+      };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 

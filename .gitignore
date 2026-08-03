@@ -30,6 +30,16 @@ coverage/
 # Local llama.cpp CPU build (downloaded binaries; not source)
 .llamacpp-cpu/
 
+# Model weights. Fetched by deploy/scripts/fetch-models.sh and verified against
+# the SHA-256 values in deploy/MODELS.md, never committed: the chat model alone
+# is 2.4 GB, and git is the wrong place for redistributable binary weights.
+models/
+*.gguf
+
+# Benchmark output is machine-specific; keep the reference run, drop the rest.
+benchmark-results-*.txt
+!benchmark-results-windows-dev.txt
+
 # OS / editor
 .DS_Store
 Thumbs.db

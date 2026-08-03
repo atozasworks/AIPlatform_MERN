@@ -18,6 +18,7 @@ import {
 } from './middleware/security.js';
 import { globalLimiter } from './middleware/rateLimit.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
+import { live, ready } from './controllers/health.controller.js';
 import v1Routes from './routes/v1/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,44 +29,62 @@ const distPath = path.resolve(__dirname, '../dist');
 
 /**
  * Builds and configures the Express application (middleware order matters).
- * Kept separate from the HTTP/Socket bootstrap in index.js for testability.
+ * Kept separate from the HTTP bootstrap in index.js for testability.
  */
 export function createApp() {
   const app = express();
 
   app.set('trust proxy', 1); // behind Nginx in production
+  // Long CPU generations must not be cut off by Node's own header timeout.
+  app.set('query parser', 'simple');
 
   app.use(requestId);
   app.use(
     pinoHttp({
       logger,
       genReqId: (req) => req.id,
-      autoLogging: { ignore: (req) => req.url === '/api/health' },
+      // Health probes fire every few seconds; logging them buries real traffic.
+      autoLogging: { ignore: (req) => req.url.startsWith('/api/health') },
     }),
   );
 
   app.use(helmetMiddleware());
   app.use(corsMiddleware());
-  app.use(compression());
+
+  app.use(
+    compression({
+      /**
+       * Compression buffers output, which is fatal for SSE: tokens would sit in
+       * the gzip buffer instead of reaching the browser. Streams opt out via
+       * the `X-No-Compression` header set below, and by content type.
+       */
+      filter(req, res) {
+        if (req.headers['x-no-compression']) return false;
+        const type = res.getHeader('Content-Type');
+        if (typeof type === 'string' && type.includes('text/event-stream')) return false;
+        return compression.filter(req, res);
+      },
+    }),
+  );
+
   app.use(express.json({ limit: env.jsonBodyLimit }));
   app.use(express.urlencoded({ extended: true, limit: env.jsonBodyLimit }));
   app.use(cookieParser());
   app.use(sanitizeMiddleware);
   app.use(hppMiddleware);
 
-  // Health check (used by Nginx / uptime monitors / load balancers).
-  app.get('/api/health', (_req, res) =>
-    res.json({ success: true, data: { status: 'ok', uptime: process.uptime() } }),
-  );
+  // ── Health endpoints (unauthenticated, unrate-limited, never cached) ──
+  app.get('/api/health/live', live);
+  app.get('/api/health/ready', ready);
+  // Retained for existing uptime monitors pointed at the old path.
+  app.get('/api/health', live);
 
   app.use('/api/v1', globalLimiter, v1Routes);
 
   // Serve the built frontend (dist) and fall back to index.html for SPA routes.
   if (fs.existsSync(distPath)) {
     app.use(express.static(distPath));
-    app.get(/^(?!\/api).*/, (_req, res) =>
-      res.sendFile(path.join(distPath, 'index.html')),
-    );
+    app.get(/^(?!\/api).*/, (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
   app.use(notFoundHandler);

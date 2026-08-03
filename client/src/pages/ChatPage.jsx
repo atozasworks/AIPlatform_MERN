@@ -7,11 +7,21 @@ import Composer from '../components/chat/Composer.jsx';
 
 export default function ChatPage() {
   const loadConversations = useChat((s) => s.loadConversations);
+  const loadModels = useChat((s) => s.loadModels);
+  const activeId = useChat((s) => s.activeId);
+  const resumeActiveGeneration = useChat((s) => s.resumeActiveGeneration);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     loadConversations();
-  }, [loadConversations]);
+    loadModels();
+  }, [loadConversations, loadModels]);
+
+  // A generation keeps running on the server across a refresh; re-attach to it
+  // so the user sees the rest of the answer instead of a frozen bubble.
+  useEffect(() => {
+    if (activeId) resumeActiveGeneration(activeId);
+  }, [activeId, resumeActiveGeneration]);
 
   return (
     <div className="flex h-full overflow-hidden">

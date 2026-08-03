@@ -1,17 +1,21 @@
 {
-  "name": "aichat-server",
-  "version": "0.1.0",
+  "name": "atozas-ai-server",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "AiChat backend — Express API, AI gateway, streaming.",
+  "description": "ATOZAS AI backend — Express API, self-hosted llama.cpp gateway, BullMQ inference queue, local RAG.",
   "main": "src/index.js",
   "scripts": {
     "dev": "node --watch src/index.js",
+    "dev:worker": "node --watch src/worker.js",
     "start": "node src/index.js",
-    "test": "node --test"
+    "start:worker": "node src/worker.js",
+    "test": "node --test \"test/*.test.js\"",
+    "test:e2e": "node --test --test-concurrency=1 \"test/integration/*.e2e.test.js\""
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
+    "bullmq": "^5.34.2",
     "compression": "^1.7.4",
     "cookie": "^0.7.2",
     "cookie-parser": "^1.4.7",
@@ -22,6 +26,7 @@
     "express-rate-limit": "^7.4.1",
     "helmet": "^8.0.0",
     "hpp": "^0.2.3",
+    "ioredis": "^5.4.1",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.8.0",
     "nanoid": "^5.0.8",

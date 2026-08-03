@@ -1,12 +1,34 @@
 import { create } from 'zustand';
 import { api } from '../lib/api.js';
-import { streamChat } from '../lib/stream.js';
+import { streamChat, resumeStream } from '../lib/stream.js';
 import { buildDisplayPath, parentKey } from '../lib/messageTree.js';
 
 /**
  * Chat state: full message tree + branch choices. `messages` is the linearized
  * active path used by the UI (ChatGPT-style version switching).
+ *
+ * Generation is queued server-side, so the store tracks a lifecycle rather than
+ * a boolean: idle → queued → generating → idle. `generation` carries the queue
+ * position and job id so the composer can show progress and stop the right job.
  */
+
+/** Phases the UI renders differently. */
+export const PHASE = {
+  IDLE: 'idle',
+  QUEUED: 'queued',
+  PREPARING: 'preparing',
+  GENERATING: 'generating',
+};
+
+const emptyGeneration = {
+  phase: PHASE.IDLE,
+  jobId: null,
+  position: 0,
+  queueDepth: 0,
+  activeGenerations: 0,
+  notice: null,
+};
+
 export const useChat = create((set, get) => ({
   conversations: [],
   activeId: null,
@@ -14,8 +36,16 @@ export const useChat = create((set, get) => ({
   branchChoices: {},
   messages: [],
   models: [],
-  selectedProvider: 'ollama',
-  selectedModel: 'llama3.1:latest',
+  profiles: [],
+  selectedProvider: 'llamacpp',
+  selectedModel: '',
+  selectedProfile: 'balanced',
+  generation: { ...emptyGeneration },
+  /**
+   * Derived from `generation.phase` and kept as a plain field rather than a
+   * getter: zustand merges state with Object.assign, which would flatten a
+   * getter into a stale value on the first update.
+   */
   isStreaming: false,
   _stream: null,
 
@@ -24,12 +54,35 @@ export const useChat = create((set, get) => ({
     set({ allMessages, branchChoices, messages });
   },
 
+  _setGeneration(patch) {
+    set((s) => {
+      const generation = { ...s.generation, ...patch };
+      return { generation, isStreaming: generation.phase !== PHASE.IDLE };
+    });
+  },
+
+  _endGeneration(notice = null) {
+    set({ generation: { ...emptyGeneration, notice }, isStreaming: false, _stream: null });
+  },
+
   async loadModels() {
     try {
-      const { models } = await api.get('/ai/models');
-      set({ models });
+      const [{ models }, profileData] = await Promise.all([
+        api.get('/ai/models'),
+        api.get('/ai/profiles').catch(() => ({ profiles: [], default: 'balanced' })),
+      ]);
+
+      const firstAvailable = models.find((m) => m.available);
+      set({
+        models,
+        profiles: profileData.profiles || [],
+        selectedProfile: profileData.default || 'balanced',
+        // The engine serves one model; adopt whatever it actually loaded.
+        selectedProvider: firstAvailable?.provider || 'llamacpp',
+        selectedModel: firstAvailable?.id || '',
+      });
     } catch {
-      set({ models: [] });
+      set({ models: [], profiles: [] });
     }
   },
 
@@ -42,6 +95,7 @@ export const useChat = create((set, get) => ({
     const { conversation } = await api.post('/conversations', {
       provider: get().selectedProvider,
       model: get().selectedModel || undefined,
+      profile: get().selectedProfile,
     });
     set((s) => ({
       conversations: [conversation, ...s.conversations],
@@ -73,8 +127,20 @@ export const useChat = create((set, get) => ({
     set({ selectedProvider: provider, selectedModel: model || '' });
   },
 
-  stopStreaming() {
-    get()._stream?.cancel();
+  setProfile(profile) {
+    set({ selectedProfile: profile });
+  },
+
+  dismissNotice() {
+    get()._setGeneration({ notice: null });
+  },
+
+  /** Stop Generation — cancels server-side so the worker frees its slot. */
+  async stopStreaming() {
+    const stream = get()._stream;
+    if (!stream) return;
+    get()._setGeneration({ phase: PHASE.GENERATING, notice: null });
+    await stream.cancel();
   },
 
   /** Switch to another edit version of a user prompt (`< 1/2 >`). */
@@ -101,9 +167,7 @@ export const useChat = create((set, get) => ({
       if (m.role === 'assistant') keep.add(String(m.id));
       if (m.role === 'user') keep.add(parentKey(m.parentMessage));
     }
-    const pruned = Object.fromEntries(
-      Object.entries(nextChoices).filter(([k]) => keep.has(k)),
-    );
+    const pruned = Object.fromEntries(Object.entries(nextChoices).filter(([k]) => keep.has(k)));
     get()._syncPath(allMessages, pruned);
   },
 
@@ -113,7 +177,7 @@ export const useChat = create((set, get) => ({
    */
   async editMessage(messageId, content) {
     const text = content.trim();
-    if (!text || get().isStreaming) return;
+    if (!text || get().generation.phase !== PHASE.IDLE) return;
 
     const activeId = get().activeId;
     if (!activeId) return;
@@ -127,6 +191,8 @@ export const useChat = create((set, get) => ({
   },
 
   async sendMessage(text, { parentMessageId } = {}) {
+    if (get().generation.phase !== PHASE.IDLE) return;
+
     let activeId = get().activeId;
     if (!activeId) {
       const convo = await get().newConversation();
@@ -160,6 +226,7 @@ export const useChat = create((set, get) => ({
       status: 'streaming',
       provider: null,
       model: null,
+      citations: [],
       parentMessage: userId,
       createdAt: new Date().toISOString(),
     };
@@ -168,7 +235,7 @@ export const useChat = create((set, get) => ({
     const key = parentKey(resolvedParent);
     const branchChoices = { ...get().branchChoices, [key]: userId };
     get()._syncPath(allMessages, branchChoices);
-    set({ isStreaming: true });
+    get()._setGeneration({ phase: PHASE.QUEUED, notice: null, position: 0 });
 
     const patchById = (id, patch) => {
       const next = get().allMessages.map((m) => (m.id === id ? { ...m, ...patch } : m));
@@ -188,69 +255,192 @@ export const useChat = create((set, get) => ({
       get()._syncPath(next, choices);
     };
 
+    const handlers = {
+      onMeta: (meta) => {
+        const prevUserId = userId;
+        const prevAssistantId = assistantId;
+        if (meta.userMessageId) userId = meta.userMessageId;
+        if (meta.assistantMessageId) assistantId = meta.assistantMessageId;
+
+        if (prevUserId !== userId) {
+          renameId(prevUserId, userId, {
+            parentMessage: meta.parentMessageId ?? resolvedParent,
+          });
+        }
+        if (prevAssistantId !== assistantId) {
+          renameId(prevAssistantId, assistantId, {
+            provider: meta.provider,
+            model: meta.model,
+            parentMessage: userId,
+          });
+        } else if (meta.provider) {
+          patchById(assistantId, { provider: meta.provider, model: meta.model });
+        }
+
+        // Survives a refresh: the page can re-attach to this job on reload.
+        if (meta.jobId) {
+          get()._setGeneration({ jobId: meta.jobId });
+          sessionStorage.setItem(
+            `atozas:job:${activeId}`,
+            JSON.stringify({ jobId: meta.jobId, assistantId }),
+          );
+        }
+      },
+
+      onQueued: (data) =>
+        get()._setGeneration({
+          phase: PHASE.QUEUED,
+          position: data.position ?? 0,
+          queueDepth: data.queueDepth ?? 0,
+          activeGenerations: data.activeGenerations ?? 0,
+        }),
+
+      // The model is loaded and prefilling; tokens have not started yet.
+      onStarted: () => get()._setGeneration({ phase: PHASE.PREPARING, position: 0 }),
+
+      onToken: (t) => {
+        if (get().generation.phase !== PHASE.GENERATING) {
+          get()._setGeneration({ phase: PHASE.GENERATING });
+        }
+        const next = get().allMessages.map((m) =>
+          m.id === assistantId ? { ...m, content: m.content + t } : m,
+        );
+        get()._syncPath(next, get().branchChoices);
+      },
+
+      onCitations: (sources) => patchById(assistantId, { retrievedSources: sources }),
+
+      onTitle: (title) =>
+        set((s) => ({
+          conversations: s.conversations.map((c) =>
+            c.id === activeId ? { ...c, title } : c,
+          ),
+        })),
+
+      onCompleted: (data) => {
+        patchById(assistantId, {
+          status: 'complete',
+          model: data.model,
+          citations: data.citations || [],
+          stats: data.stats || null,
+        });
+        sessionStorage.removeItem(`atozas:job:${activeId}`);
+        get()._endGeneration(
+          data.truncatedInput
+            ? 'Your message was long, so the earlier part was trimmed to fit the model context.'
+            : null,
+        );
+      },
+
+      onCancel: () => {
+        patchById(assistantId, { status: 'stopped' });
+        sessionStorage.removeItem(`atozas:job:${activeId}`);
+        get()._endGeneration();
+      },
+
+      onError: (err) => {
+        const current = get().allMessages.find((m) => m.id === assistantId);
+        patchById(assistantId, {
+          status: 'error',
+          content: current?.content || '',
+          error: err.message,
+        });
+        sessionStorage.removeItem(`atozas:job:${activeId}`);
+        get()._endGeneration(
+          err.code === 'QUEUE_FULL' || err.code === 'INFERENCE_UNAVAILABLE'
+            ? 'ATOZAS AI is temporarily unavailable. Please try again in a moment.'
+            : null,
+        );
+      },
+
+      // Connection dropped without a terminal event; the worker keeps going.
+      onClose: () => {
+        if (get().generation.phase === PHASE.IDLE) return;
+        patchById(assistantId, { status: 'complete' });
+        get()._endGeneration('The connection dropped. Reload to see the finished reply.');
+      },
+    };
+
     const stream = streamChat(
       activeId,
       {
         content: text,
         provider: get().selectedProvider,
         model: get().selectedModel || undefined,
+        profile: get().selectedProfile,
         clientMessageId,
-        // Always send explicitly so edit siblings land on the right parent.
+        // Always sent explicitly so edit siblings land on the right parent.
         parentMessageId: resolvedParent,
       },
-      {
-        onMeta: (meta) => {
-          const prevUserId = userId;
-          const prevAssistantId = assistantId;
-          if (meta.userMessageId) userId = meta.userMessageId;
-          if (meta.assistantMessageId) assistantId = meta.assistantMessageId;
+      handlers,
+    );
 
-          if (prevUserId !== userId) {
-            renameId(prevUserId, userId, {
-              parentMessage: meta.parentMessageId ?? resolvedParent,
-            });
-          }
-          if (prevAssistantId !== assistantId) {
-            renameId(prevAssistantId, assistantId, {
-              provider: meta.provider,
-              model: meta.model,
-              parentMessage: userId,
-            });
-          } else {
-            patchById(assistantId, { provider: meta.provider, model: meta.model });
-          }
-        },
+    set({ _stream: stream });
+  },
+
+  /**
+   * Re-attaches to a generation that was running when the page was reloaded.
+   * Call once after `openConversation`.
+   */
+  async resumeActiveGeneration(conversationId) {
+    const saved = sessionStorage.getItem(`atozas:job:${conversationId}`);
+    if (!saved) return;
+
+    let jobId;
+    let assistantId;
+    try {
+      ({ jobId, assistantId } = JSON.parse(saved));
+    } catch {
+      sessionStorage.removeItem(`atozas:job:${conversationId}`);
+      return;
+    }
+    if (!jobId || !assistantId) return;
+
+    const patchById = (id, patch) => {
+      const next = get().allMessages.map((m) => (m.id === id ? { ...m, ...patch } : m));
+      get()._syncPath(next, get().branchChoices);
+    };
+
+    get()._setGeneration({ phase: PHASE.GENERATING, jobId });
+
+    // The already-persisted prefix is on screen; replay only what follows it.
+    const existing = get().allMessages.find((m) => m.id === assistantId);
+    const stream = resumeStream(
+      conversationId,
+      jobId,
+      { lastSeq: 0 },
+      {
         onToken: (t) => {
           const next = get().allMessages.map((m) =>
             m.id === assistantId ? { ...m, content: m.content + t } : m,
           );
           get()._syncPath(next, get().branchChoices);
         },
-        onTitle: (title) =>
-          set((s) => ({
-            conversations: s.conversations.map((c) =>
-              c.id === activeId ? { ...c, title } : c,
-            ),
-          })),
-        onDone: () => {
-          patchById(assistantId, { status: 'complete' });
-          set({ isStreaming: false, _stream: null });
+        onCompleted: (data) => {
+          patchById(assistantId, {
+            status: 'complete',
+            citations: data.citations || [],
+            stats: data.stats || null,
+          });
+          sessionStorage.removeItem(`atozas:job:${conversationId}`);
+          get()._endGeneration();
         },
         onCancel: () => {
           patchById(assistantId, { status: 'stopped' });
-          set({ isStreaming: false, _stream: null });
+          sessionStorage.removeItem(`atozas:job:${conversationId}`);
+          get()._endGeneration();
         },
-        onError: (err) => {
-          const current = get().allMessages.find((m) => m.id === assistantId);
-          patchById(assistantId, {
-            status: 'error',
-            content: current?.content || '',
-            error: err.message,
-          });
-          set({ isStreaming: false, _stream: null });
+        onError: () => {
+          sessionStorage.removeItem(`atozas:job:${conversationId}`);
+          get()._endGeneration();
         },
+        onClose: () => get()._endGeneration(),
       },
     );
+
+    // Wipe the optimistic prefix so replayed tokens rebuild it exactly once.
+    if (existing) patchById(assistantId, { content: '' });
+
     set({ _stream: stream });
   },
 }));

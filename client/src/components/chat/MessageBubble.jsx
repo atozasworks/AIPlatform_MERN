@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import Markdown from './Markdown.jsx';
+import Citations from './Citations.jsx';
 import { useChat } from '../../store/chat.js';
 
 /**
@@ -145,6 +146,8 @@ export default function MessageBubble({ message }) {
           <p className="mt-1 text-sm text-red-500">⚠ {message.error || 'Generation failed.'}</p>
         )}
 
+        {!streaming && <Citations citations={message.citations} />}
+
         {!streaming && message.content && (
           <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-400">
             {message.model && <span className="mr-1">{message.model}</span>}
@@ -152,6 +155,11 @@ export default function MessageBubble({ message }) {
               {copied ? <CheckIcon /> : <CopyIcon />}
             </IconButton>
             {message.status === 'stopped' && <span className="italic">stopped</span>}
+            {message.stats?.tokensPerSecond ? (
+              <span title="Local generation speed on ATOZAS hardware">
+                {message.stats.tokensPerSecond} tok/s
+              </span>
+            ) : null}
           </div>
         )}
       </div>

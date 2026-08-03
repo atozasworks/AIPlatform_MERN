@@ -11,6 +11,10 @@ import { AppError } from '../utils/AppError.js';
  *  - CORS allowlist with credentials
  *  - NoSQL injection sanitization
  *  - HTTP parameter pollution protection
+ *
+ * The CSP is written for a self-hosted, self-contained deployment: no CDN, no
+ * third-party analytics, no external fonts. Everything the SPA needs is served
+ * from the same origin, so the policy can stay strict.
  */
 export function helmetMiddleware() {
   return helmet({
@@ -18,15 +22,30 @@ export function helmetMiddleware() {
       useDefaults: true,
       directives: {
         defaultSrc: ["'self'"],
-        // API server serves JSON only; SPA is served by Nginx/Vite separately.
+        // The SPA calls only its own origin; the AI engine is never reachable
+        // from the browser, it sits behind the API on loopback.
         connectSrc: ["'self'", ...env.corsOrigins],
         imgSrc: ["'self'", 'data:', 'blob:'],
         scriptSrc: ["'self'"],
+        scriptSrcAttr: ["'none'"],
+        // Tailwind injects styles at build time, but the runtime still needs
+        // inline style attributes for dynamic values. No external stylesheets.
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        fontSrc: ["'self'", 'data:'],
         objectSrc: ["'none'"],
         frameAncestors: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+        // Forbids the page from opening a WebSocket or worker anywhere else.
+        workerSrc: ["'self'", 'blob:'],
+        ...(env.isProd ? { upgradeInsecureRequests: [] } : {}),
       },
     },
     crossOriginResourcePolicy: { policy: 'same-site' },
+    crossOriginOpenerPolicy: { policy: 'same-origin' },
+    referrerPolicy: { policy: 'no-referrer' },
+    // HSTS only makes sense once TLS terminates at Nginx in production.
+    hsts: env.isProd ? { maxAge: 31536000, includeSubDomains: true, preload: false } : false,
   });
 }
 
@@ -40,7 +59,16 @@ export function corsMiddleware() {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'X-CSRF-Token', 'Idempotency-Key'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Request-Id',
+      'X-CSRF-Token',
+      'Idempotency-Key',
+      'Last-Event-ID',
+    ],
+    // Lets the client read the standard rate-limit headers on a 429.
+    exposedHeaders: ['RateLimit', 'RateLimit-Policy', 'Retry-After', 'X-Request-Id'],
   });
 }
 

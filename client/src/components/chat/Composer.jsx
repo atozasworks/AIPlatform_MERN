@@ -1,9 +1,11 @@
 import { useRef, useState } from 'react';
 import { useChat } from '../../store/chat.js';
+import QueueStatus from './QueueStatus.jsx';
 
 /**
  * Sticky prompt composer. Enter sends, Shift+Enter adds a newline. While a
- * response streams, the send button becomes a Stop button (§5).
+ * response is queued or streaming, the send button becomes a Stop button that
+ * cancels the job server-side (§5).
  */
 export default function Composer() {
   const [text, setText] = useState('');
@@ -36,6 +38,7 @@ export default function Composer() {
 
   return (
     <div className="px-4 pb-4 pt-2">
+      <QueueStatus />
       <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-3xl border border-slate-200 bg-white p-2 pl-4 shadow-lg shadow-slate-200/50 transition focus-within:border-violet-400 dark:border-slate-700 dark:bg-slate-900 dark:shadow-black/20">
         <button
           type="button"
@@ -118,7 +121,7 @@ export default function Composer() {
         )}
       </div>
       <p className="mx-auto mt-2 max-w-3xl text-center text-xs text-slate-400">
-        AtozasAi can make mistakes. Verify important information.
+        ATOZAS AI runs on ATOZAS servers. It can make mistakes — verify important information.
       </p>
     </div>
   );

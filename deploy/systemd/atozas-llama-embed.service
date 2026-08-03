@@ -1,0 +1,89 @@
+[Unit]
+Description=ATOZAS llama.cpp embedding server (Qwen3-Embedding-0.6B, CPU)
+Documentation=https://github.com/ggml-org/llama.cpp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+
+User=atozas-ai
+Group=atozas-ai
+WorkingDirectory=/opt/atozas-ai
+
+# A separate, small instance so document indexing never competes with user
+# chat for the Qwen3-4B slots. Two threads is ample for a 0.6B encoder-style
+# model and leaves the remaining cores for generation.
+Environment=OMP_NUM_THREADS=2
+
+# --ctx-size is the TOTAL context split across --parallel slots, so
+# 8192 / 4 = 2048 per slot. That must comfortably exceed RAG_CHUNK_TOKENS (380)
+# plus the query instruction block. Passing 2048 here would give each slot 512
+# and silently truncate long chunks, degrading retrieval with no error.
+#
+# --pooling last, not mean: Qwen3-Embedding is a decoder model that encodes the
+# sequence into its final token. Mean pooling over a decoder's states produces a
+# near-constant vector and destroys retrieval.
+ExecStart=/opt/atozas-ai/llama.cpp/build/bin/llama-server \
+  --model /opt/atozas-ai/models/embeddings/Qwen3-Embedding-0.6B-Q8_0.gguf \
+  --alias qwen3-embedding-0.6b \
+  --host 127.0.0.1 \
+  --port 8082 \
+  --embedding \
+  --pooling last \
+  --threads 2 \
+  --threads-batch 2 \
+  --ctx-size 8192 \
+  --parallel 4 \
+  --batch-size 2048 \
+  --ubatch-size 2048 \
+  --no-webui \
+  --log-prefix \
+  --log-timestamps
+
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+TimeoutStartSec=120
+KillSignal=SIGINT
+TimeoutStopSec=20
+KillMode=mixed
+
+# 610 MB of weights plus KV cache for 4 x 2048 tokens.
+MemoryMax=3G
+MemoryHigh=2500M
+# Lower priority than chat: a slow document import is acceptable, a slow
+# conversation is not.
+Nice=10
+CPUWeight=30
+IOWeight=40
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+ReadOnlyPaths=/opt/atozas-ai/models
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressAllow=localhost
+IPAddressDeny=any
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=atozas-llama-embed
+
+[Install]
+WantedBy=multi-user.target

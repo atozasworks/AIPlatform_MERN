@@ -2,6 +2,8 @@ import { Conversation } from '../models/Conversation.js';
 import { Message } from '../models/Message.js';
 import { AppError } from '../utils/AppError.js';
 import { aiGateway } from './ai/AIGateway.js';
+import { isValidProfile } from './ai/prompts.js';
+import { env } from '../config/env.js';
 
 /** Lean docs only have `_id`; map to `id` so the client matches mongoose toJSON. */
 export function withId(doc) {
@@ -123,6 +125,8 @@ export async function createConversation(userId, input = {}) {
     title: input.title || 'New chat',
     provider: provider.id,
     model,
+    profile: isValidProfile(input.profile) ? input.profile : env.ai.defaultProfile,
+    retrievalEnabled: input.retrievalEnabled !== false,
     systemPrompt: input.systemPrompt || '',
     temporary: Boolean(input.temporary),
   });
@@ -206,8 +210,24 @@ export async function prepareMessageEdit(userId, conversationId, messageId) {
   };
 }
 
+/**
+ * Returns the branch ending at `leafMessageId` split into prior turns and the
+ * current one, without a system prompt. The LLM worker owns prompt assembly and
+ * token budgeting, so it needs the raw history rather than a ready-made array.
+ *
+ * @returns {Promise<{ history: Array<{role:string,content:string}>, currentTurn: object|null }>}
+ */
+export async function getBranchHistory(conversation, { leafMessageId } = {}) {
+  const turns = await buildProviderMessages(conversation, {
+    leafMessageId,
+    includeSystemPrompt: false,
+  });
+  const currentTurn = turns.length ? turns[turns.length - 1] : null;
+  return { history: turns.slice(0, -1), currentTurn };
+}
+
 /** Builds provider history along the branch ending at `leafMessageId` (inclusive). */
-export async function buildProviderMessages(conversation, { leafMessageId } = {}) {
+export async function buildProviderMessages(conversation, { leafMessageId, includeSystemPrompt = true } = {}) {
   let history = await Message.find({
     conversation: conversation._id,
     deletedAt: null,
@@ -224,7 +244,7 @@ export async function buildProviderMessages(conversation, { leafMessageId } = {}
     : buildActivePath(normalized);
 
   const messages = [];
-  if (conversation.systemPrompt) {
+  if (includeSystemPrompt && conversation.systemPrompt) {
     messages.push({ role: 'system', content: conversation.systemPrompt });
   }
   for (const m of path) {

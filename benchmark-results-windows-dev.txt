@@ -1,0 +1,17 @@
+ATOZAS AI - llama.cpp benchmark (Windows development machine)
+date:    2026-08-01T14:12:22.944Z
+host:    win32 10.0.26200
+cpu:     11th Gen Intel(R) Core(TM) i7-11800H @ 2.30GHz
+cores:   16 logical
+memory:  15.7 GB total
+threads: 8
+gen tokens per request: 256
+
+ctx=4096  parallel=1   ttft=90    ms  per-stream=14.44   tok/s  aggregate=14.44   tok/s  rss=0MB
+ctx=4096  parallel=2   ttft=405   ms  per-stream=11.31   tok/s  aggregate=22.58   tok/s  rss=0MB
+ctx=4096  parallel=3   ttft=895   ms  per-stream=8.67    tok/s  aggregate=25.97   tok/s  rss=0MB
+ctx=4096  parallel=4   ttft=1335  ms  per-stream=9.89    tok/s  aggregate=39.52   tok/s  rss=0MB
+ctx=8192  parallel=1   ttft=75    ms  per-stream=14.76   tok/s  aggregate=14.76   tok/s  rss=0MB
+ctx=8192  parallel=2   ttft=397   ms  per-stream=11.23   tok/s  aggregate=22.43   tok/s  rss=0MB
+ctx=8192  parallel=3   ttft=826   ms  per-stream=8.58    tok/s  aggregate=25.70   tok/s  rss=0MB
+ctx=8192  parallel=4   ttft=1217  ms  per-stream=9.88    tok/s  aggregate=39.44   tok/s  rss=0MB

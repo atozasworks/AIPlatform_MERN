@@ -1,0 +1,115 @@
+[Unit]
+Description=ATOZAS llama.cpp chat server (Qwen3-4B-Q4_K_M, CPU)
+Documentation=https://github.com/ggml-org/llama.cpp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+
+# Dedicated unprivileged account. Created by deploy/scripts/install-llamacpp.sh.
+User=atozas-ai
+Group=atozas-ai
+WorkingDirectory=/opt/atozas-ai
+
+# ── Thread configuration ──
+# --threads is generation (memory-bandwidth bound; more threads stop helping
+# early). --threads-batch is prefill (compute bound; scales further).
+# Both default to 8 here for the Hostinger KVM 8. Run
+# deploy/scripts/benchmark.sh and set these from measured results, not guesses.
+Environment=LLAMA_THREADS=8
+Environment=LLAMA_THREADS_BATCH=8
+Environment=LLAMA_PARALLEL=2
+
+# --ctx-size is the TOTAL context, which llama.cpp divides evenly across the
+# --parallel slots. So this must be (per-conversation window x LLAMA_PARALLEL),
+# not the window itself: 8192 x 2 = 16384 gives each slot the 8192 tokens that
+# LLAMACPP_CONTEXT_WINDOW in server/.env promises the token budgeter.
+# Setting it to 8192 here would silently hand each slot only 4096 and truncate
+# long conversations. Verify after any change with:
+#   journalctl -u atozas-llama | grep n_ctx_slot
+# systemd cannot do arithmetic in Environment=, hence the pre-multiplied value.
+Environment=LLAMA_CTX_SIZE=16384
+# Prevents OpenMP from spawning more threads than we allocated.
+Environment=OMP_NUM_THREADS=8
+
+ExecStart=/opt/atozas-ai/llama.cpp/build/bin/llama-server \
+  --model /opt/atozas-ai/models/qwen3-4b/Qwen3-4B-Q4_K_M.gguf \
+  --alias qwen3-4b-instruct \
+  --host 127.0.0.1 \
+  --port 8081 \
+  --threads ${LLAMA_THREADS} \
+  --threads-batch ${LLAMA_THREADS_BATCH} \
+  --ctx-size ${LLAMA_CTX_SIZE} \
+  --parallel ${LLAMA_PARALLEL} \
+  --cont-batching \
+  --cache-prompt \
+  --mlock \
+  --no-webui \
+  --metrics \
+  --timeout 600 \
+  --log-prefix \
+  --log-timestamps
+
+# ── Restart policy ──
+Restart=always
+RestartSec=5
+# Give up only after repeated rapid failures, so a bad model file surfaces
+# instead of restart-looping forever.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Loading a 2.5 GB model with --mlock takes time on a cold page cache.
+TimeoutStartSec=300
+# SIGINT lets llama-server finish in-flight slots before exiting.
+KillSignal=SIGINT
+TimeoutStopSec=30
+KillMode=mixed
+
+# ── Resource controls ──
+# Hard ceiling well under the 32 GB box so a runaway context cannot OOM Mongo,
+# Redis or the Node processes.
+MemoryMax=12G
+MemoryHigh=10G
+# The model is nice-d slightly below the API so the box stays responsive under
+# full inference load.
+Nice=5
+CPUWeight=90
+IOWeight=80
+
+# ── Hardening ──
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+# Model directory is read-only to the service; only the deploy script writes it.
+ReadOnlyPaths=/opt/atozas-ai/models
+# Loopback only — the model must never be reachable from the internet.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressAllow=localhost
+IPAddressDeny=any
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# --mlock needs the capability to lock pages in memory.
+AmbientCapabilities=CAP_IPC_LOCK
+CapabilityBoundingSet=CAP_IPC_LOCK
+LimitMEMLOCK=infinity
+
+# ── Logging ──
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=atozas-llama
+
+[Install]
+WantedBy=multi-user.target
