@@ -40,4 +40,5 @@ server.zip
 client/dist.zip
 .llamacpp-cpu.zip
 server/start-llama.ps1
-server/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf
+server/models/
+models/
