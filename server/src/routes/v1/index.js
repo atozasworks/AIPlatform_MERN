@@ -4,6 +4,7 @@ import conversationRoutes from './conversation.routes.js';
 import aiRoutes from './ai.routes.js';
 import ragRoutes from './rag.routes.js';
 import adminRoutes from './admin.routes.js';
+import publicChatRoutes from './publicChat.routes.js';
 
 /**
  * Versioned API router mounted at /api/v1 (§24).
@@ -19,5 +20,7 @@ router.use('/conversations', conversationRoutes);
 router.use('/ai', aiRoutes);
 router.use('/rag', ragRoutes);
 router.use('/admin', adminRoutes);
+// Pre-login Public/Private chat — separate from authenticated /conversations.
+router.use('/public', publicChatRoutes);
 
 export default router;

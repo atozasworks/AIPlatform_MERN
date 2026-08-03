@@ -1,0 +1,298 @@
+import { create } from 'zustand';
+import { api } from '../lib/api.js';
+import { streamPublicChat, streamEphemeralChat } from '../lib/publicStream.js';
+
+/**
+ * Pre-login chat store. Completely separate from `useChat` so authenticated
+ * conversations, branching, and resume logic stay untouched.
+ *
+ * Modes:
+ *  - public  (default): shared history loaded from / persisted to the server
+ *  - private: in-memory only; never written to durable storage
+ */
+
+export const MODE = {
+  PUBLIC: 'public',
+  PRIVATE: 'private',
+};
+
+export const PHASE = {
+  IDLE: 'idle',
+  QUEUED: 'queued',
+  PREPARING: 'preparing',
+  GENERATING: 'generating',
+};
+
+const emptyGeneration = {
+  phase: PHASE.IDLE,
+  jobId: null,
+  position: 0,
+  queueDepth: 0,
+  activeGenerations: 0,
+  notice: null,
+};
+
+export const usePublicChat = create((set, get) => ({
+  mode: MODE.PUBLIC,
+  messages: [],
+  room: null,
+  selectedProvider: 'llamacpp',
+  selectedModel: '',
+  selectedProfile: 'balanced',
+  generation: { ...emptyGeneration },
+  isStreaming: false,
+  loadingHistory: true,
+  historyError: null,
+  _stream: null,
+
+  _setGeneration(patch) {
+    set((s) => {
+      const generation = { ...s.generation, ...patch };
+      return { generation, isStreaming: generation.phase !== PHASE.IDLE };
+    });
+  },
+
+  _endGeneration(notice = null) {
+    set({ generation: { ...emptyGeneration, notice }, isStreaming: false, _stream: null });
+  },
+
+  async loadModels() {
+    try {
+      const [{ models }, profileData] = await Promise.all([
+        api.get('/public/models'),
+        api.get('/public/profiles').catch(() => ({ profiles: [], default: 'balanced' })),
+      ]);
+      const firstAvailable = models.find((m) => m.available);
+      set({
+        selectedProvider: firstAvailable?.provider || 'llamacpp',
+        selectedModel: firstAvailable?.id || '',
+        selectedProfile: profileData.default || 'balanced',
+      });
+    } catch {
+      // Non-fatal: stream endpoints resolve the default engine themselves.
+    }
+  },
+
+  async loadPublicHistory() {
+    set({ loadingHistory: true, historyError: null });
+    try {
+      const { room, messages } = await api.get('/public/room');
+      // Only apply if still in public mode (user may have switched mid-fetch).
+      if (get().mode === MODE.PUBLIC) {
+        set({
+          room,
+          messages: (messages || []).map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content || '',
+            status: m.status || 'complete',
+            model: m.model,
+            provider: m.provider,
+            createdAt: m.createdAt,
+          })),
+          loadingHistory: false,
+        });
+      } else {
+        set({ loadingHistory: false });
+      }
+    } catch (err) {
+      set({
+        loadingHistory: false,
+        historyError: err.message || 'Could not load public chat history.',
+      });
+    }
+  },
+
+  /**
+   * Switch Public ↔ Private. Private always starts blank; Public reloads shared history.
+   */
+  async setMode(mode) {
+    if (mode !== MODE.PUBLIC && mode !== MODE.PRIVATE) return;
+    if (get().mode === mode) return;
+
+    // Abort any in-flight generation when switching modes.
+    const stream = get()._stream;
+    if (stream) await stream.cancel().catch(() => {});
+
+    if (mode === MODE.PRIVATE) {
+      set({
+        mode: MODE.PRIVATE,
+        messages: [],
+        room: null,
+        historyError: null,
+        generation: { ...emptyGeneration },
+        isStreaming: false,
+        _stream: null,
+      });
+      return;
+    }
+
+    set({
+      mode: MODE.PUBLIC,
+      messages: [],
+      generation: { ...emptyGeneration },
+      isStreaming: false,
+      _stream: null,
+      loadingHistory: true,
+      historyError: null,
+    });
+    // History is loaded by PublicChatPage when it observes mode === public.
+  },
+
+  async stopStreaming() {
+    const stream = get()._stream;
+    if (!stream) return;
+    await stream.cancel();
+  },
+
+  dismissNotice() {
+    get()._setGeneration({ notice: null });
+  },
+
+  async sendMessage(text) {
+    const content = text.trim();
+    if (!content || get().generation.phase !== PHASE.IDLE) return;
+
+    const mode = get().mode;
+    const clientMessageId = crypto.randomUUID();
+    let userId = `tmp-user-${clientMessageId}`;
+    let assistantId = `tmp-assistant-${clientMessageId}`;
+
+    const userMsg = {
+      id: userId,
+      role: 'user',
+      content,
+      status: 'complete',
+      createdAt: new Date().toISOString(),
+    };
+    const assistantMsg = {
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      status: 'streaming',
+      provider: null,
+      model: null,
+      createdAt: new Date().toISOString(),
+    };
+
+    // Snapshot prior turns for ephemeral (private) mode before appending.
+    const priorHistory =
+      mode === MODE.PRIVATE
+        ? get()
+            .messages.filter((m) => m.role === 'user' || m.role === 'assistant')
+            .filter((m) => m.status !== 'error')
+            .map((m) => ({ role: m.role, content: m.content }))
+        : [];
+
+    set((s) => ({ messages: [...s.messages, userMsg, assistantMsg] }));
+    get()._setGeneration({ phase: PHASE.QUEUED, notice: null, position: 0 });
+
+    const patchById = (id, patch) => {
+      set((s) => ({
+        messages: s.messages.map((m) => (m.id === id ? { ...m, ...patch } : m)),
+      }));
+    };
+
+    const renameId = (prevId, nextId, extra = {}) => {
+      set((s) => ({
+        messages: s.messages.map((m) => (m.id === prevId ? { ...m, id: nextId, ...extra } : m)),
+      }));
+    };
+
+    const handlers = {
+      onMeta: (meta) => {
+        const prevUserId = userId;
+        const prevAssistantId = assistantId;
+        if (meta.userMessageId) userId = meta.userMessageId;
+        if (meta.assistantMessageId) assistantId = meta.assistantMessageId;
+
+        if (prevUserId !== userId) renameId(prevUserId, userId);
+        if (prevAssistantId !== assistantId) {
+          renameId(prevAssistantId, assistantId, {
+            provider: meta.provider,
+            model: meta.model,
+          });
+        } else if (meta.provider) {
+          patchById(assistantId, { provider: meta.provider, model: meta.model });
+        }
+
+        if (meta.jobId) get()._setGeneration({ jobId: meta.jobId });
+      },
+
+      onQueued: (data) =>
+        get()._setGeneration({
+          phase: PHASE.QUEUED,
+          position: data.position ?? 0,
+          queueDepth: data.queueDepth ?? 0,
+          activeGenerations: data.activeGenerations ?? 0,
+        }),
+
+      onStarted: () => get()._setGeneration({ phase: PHASE.PREPARING, position: 0 }),
+
+      onToken: (t) => {
+        if (get().generation.phase !== PHASE.GENERATING) {
+          get()._setGeneration({ phase: PHASE.GENERATING });
+        }
+        set((s) => ({
+          messages: s.messages.map((m) =>
+            m.id === assistantId ? { ...m, content: m.content + t } : m,
+          ),
+        }));
+      },
+
+      onCompleted: (data) => {
+        patchById(assistantId, {
+          status: 'complete',
+          model: data.model,
+        });
+        get()._endGeneration(
+          data.truncatedInput
+            ? 'Your message was long, so the earlier part was trimmed to fit the model context.'
+            : null,
+        );
+      },
+
+      onCancel: () => {
+        patchById(assistantId, { status: 'stopped' });
+        get()._endGeneration();
+      },
+
+      onError: (err) => {
+        const current = get().messages.find((m) => m.id === assistantId);
+        patchById(assistantId, {
+          status: 'error',
+          content: current?.content || '',
+          error: err.message,
+        });
+        get()._endGeneration(
+          err.code === 'QUEUE_FULL' || err.code === 'INFERENCE_UNAVAILABLE'
+            ? 'ATOZAS AI is temporarily unavailable. Please try again in a moment.'
+            : null,
+        );
+      },
+
+      onClose: () => {
+        if (get().generation.phase === PHASE.IDLE) return;
+        patchById(assistantId, { status: 'complete' });
+        get()._endGeneration('The connection dropped.');
+      },
+    };
+
+    const payload = {
+      content,
+      provider: get().selectedProvider,
+      model: get().selectedModel || undefined,
+      profile: get().selectedProfile,
+      clientMessageId,
+    };
+
+    const stream =
+      mode === MODE.PUBLIC
+        ? streamPublicChat(payload, handlers)
+        : streamEphemeralChat({ ...payload, history: priorHistory }, handlers);
+
+    set({ _stream: stream });
+  },
+}));
+
+export default usePublicChat;

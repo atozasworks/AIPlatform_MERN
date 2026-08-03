@@ -4,6 +4,7 @@ import { useAuth } from './store/auth.js';
 import LoginPage from './pages/LoginPage.jsx';
 import RegisterPage from './pages/RegisterPage.jsx';
 import ChatPage from './pages/ChatPage.jsx';
+import PublicChatPage from './pages/PublicChatPage.jsx';
 import Spinner from './components/ui/Spinner.jsx';
 
 function ProtectedRoute({ children }) {
@@ -19,6 +20,17 @@ function PublicOnlyRoute({ children }) {
   if (status === 'loading') return <FullScreenLoader />;
   if (status === 'authenticated') return <Navigate to="/" replace />;
   return children;
+}
+
+/**
+ * `/` shows pre-login chat for anonymous visitors and the existing ChatPage
+ * for signed-in users — so post-login UX stays on the same URL.
+ */
+function HomeRoute() {
+  const status = useAuth((s) => s.status);
+  if (status === 'loading') return <FullScreenLoader />;
+  if (status === 'authenticated') return <ChatPage />;
+  return <PublicChatPage />;
 }
 
 function FullScreenLoader() {
@@ -54,14 +66,16 @@ export default function App() {
           </PublicOnlyRoute>
         }
       />
+      {/* Explicit guest chat URL (same page as anonymous `/`). */}
       <Route
-        path="/"
+        path="/chat"
         element={
-          <ProtectedRoute>
-            <ChatPage />
-          </ProtectedRoute>
+          <PublicOnlyRoute>
+            <PublicChatPage />
+          </PublicOnlyRoute>
         }
       />
+      <Route path="/" element={<HomeRoute />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

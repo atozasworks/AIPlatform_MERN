@@ -69,6 +69,12 @@ export default function RegisterPage() {
           Sign in
         </Link>
       </p>
+      <p className="mt-3 text-center text-sm text-slate-500">
+        Or{' '}
+        <Link to="/chat" className="font-medium text-brand-600 hover:underline dark:text-brand-400">
+          try the AI chat without signing in
+        </Link>
+      </p>
     </AuthLayout>
   );
 }

@@ -17,6 +17,7 @@ import { Message } from '../../models/Message.js';
 import { UsageEvent } from '../../models/UsageEvent.js';
 import { getOwnedConversation, getBranchHistory } from '../conversation.service.js';
 import { increment, observe, METRIC, SAMPLE } from '../health/metrics.js';
+import { processGuestJob } from './guestLlmWorker.js';
 
 /**
  * The controlled LLM worker.
@@ -28,6 +29,9 @@ import { increment, observe, METRIC, SAMPLE } from '../health/metrics.js';
  * The worker never writes to an HTTP response. It publishes frames to Redis and
  * persists the result to MongoDB, so a browser that disconnects mid-generation
  * can reconnect and replay, and the answer is saved either way.
+ *
+ * Guest (pre-login) jobs are dispatched to `processGuestJob` and never enter
+ * the authenticated Conversation/Message ownership path below.
  */
 
 /** Cancellation is polled rather than pushed, since it crosses processes. */
@@ -112,6 +116,12 @@ function shouldRetrieve(profile, conversation) {
  * @param {import('bullmq').Job} job
  */
 async function processJob(job) {
+  // Pre-login public/ephemeral jobs use a separate handler so the authenticated
+  // path below stays byte-for-byte the same for logged-in users.
+  if (job.data?.kind === 'public' || job.data?.kind === 'ephemeral') {
+    return processGuestJob(job);
+  }
+
   const data = job.data;
   const jobId = String(job.id);
   const publisher = createStreamPublisher(jobId);

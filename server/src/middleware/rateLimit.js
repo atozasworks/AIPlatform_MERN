@@ -76,4 +76,24 @@ export const ingestLimiter = rateLimit({
   },
 });
 
+/**
+ * Pre-login public/private chat — tighter IP budget than the global limiter
+ * because these routes skip authentication.
+ */
+export const publicChatLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 30,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: (req) => `ip:${req.ip}`,
+  store: createStore('public-chat'),
+  message: {
+    success: false,
+    error: {
+      code: 'RATE_LIMITED',
+      message: 'Too many chat requests. Please wait a moment before trying again.',
+    },
+  },
+});
+
 export default globalLimiter;
