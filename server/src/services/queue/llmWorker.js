@@ -193,7 +193,7 @@ async function processJob(job) {
       history: context.history,
       currentTurn: context.currentTurn,
       maxOutputTokens: profile.maxTokens,
-      contextWindow: provider.contextWindow,
+      contextWindow: provider.getContextWindow?.(model) ?? provider.contextWindow,
     });
 
     if (budgeted.droppedCount) {

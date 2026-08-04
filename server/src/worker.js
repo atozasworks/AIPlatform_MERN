@@ -3,6 +3,7 @@ import { closeRedis } from './config/redis.js';
 import { startLlmWorker, stopLlmWorker } from './services/queue/llmWorker.js';
 import { cleanStaleJobs, closeQueue } from './services/queue/llmQueue.js';
 import { aiGateway } from './services/ai/AIGateway.js';
+import { resolveEnabledChatModelIds } from './services/ai/modelRegistry.js';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 
@@ -42,7 +43,8 @@ async function start() {
     {
       concurrency: env.limits.workerConcurrency,
       engine: env.ai.defaultProvider,
-      model: env.ai.llamacpp.model,
+      models: resolveEnabledChatModelIds(),
+      defaultModel: env.ai.llamacpp.defaultModel,
     },
     'ATOZAS LLM worker ready',
   );

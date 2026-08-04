@@ -20,6 +20,28 @@ export const PHASE = {
   GENERATING: 'generating',
 };
 
+/**
+ * The picked model outlives a reload, so a user who prefers Llama 3.2 is not
+ * silently put back on the default every time they open the app.
+ */
+const MODEL_STORAGE_KEY = 'atozas:model';
+
+function readStoredModel() {
+  try {
+    return localStorage.getItem(MODEL_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function storeModel(id) {
+  try {
+    localStorage.setItem(MODEL_STORAGE_KEY, id);
+  } catch {
+    // Private-mode or blocked storage: the selection just won't persist.
+  }
+}
+
 const emptyGeneration = {
   phase: PHASE.IDLE,
   jobId: null,
@@ -67,23 +89,37 @@ export const useChat = create((set, get) => ({
 
   async loadModels() {
     try {
-      const [{ models }, profileData] = await Promise.all([
+      const [modelData, profileData] = await Promise.all([
         api.get('/ai/models'),
         api.get('/ai/profiles').catch(() => ({ profiles: [], default: 'balanced' })),
       ]);
 
-      const firstAvailable = models.find((m) => m.available);
+      const models = modelData.models || [];
+      // Preference order: what the user last picked, then the engine default,
+      // then anything that is actually loadable. A remembered model that has
+      // since lost its weights must not strand the composer on a dead choice.
+      const remembered = models.find((m) => m.id === readStoredModel() && m.available);
+      const serverDefault = models.find((m) => m.id === modelData.default && m.available);
+      const chosen = remembered || serverDefault || models.find((m) => m.available) || models[0];
+
       set({
         models,
         profiles: profileData.profiles || [],
         selectedProfile: profileData.default || 'balanced',
-        // The engine serves one model; adopt whatever it actually loaded.
-        selectedProvider: firstAvailable?.provider || 'llamacpp',
-        selectedModel: firstAvailable?.id || '',
+        selectedProvider: chosen?.provider || 'llamacpp',
+        selectedModel: chosen?.id || '',
       });
     } catch {
       set({ models: [], profiles: [] });
     }
+  },
+
+  /** Model picker. The choice is global and applies to the next message sent. */
+  selectModel(modelId) {
+    const model = get().models.find((m) => m.id === modelId);
+    if (!model) return;
+    storeModel(modelId);
+    set({ selectedProvider: model.provider, selectedModel: model.id });
   },
 
   async loadConversations() {

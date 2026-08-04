@@ -12,7 +12,21 @@ file is the human-readable record; the machine-readable copy lives in
 | All weights self-hosted on ATOZAS infrastructure | Yes |
 | Any third-party LLM / embedding / reranking API in use | No |
 | Any prompt, document or embedding transmitted externally | No |
-| All models permit commercial use | Yes |
+| All models permit commercial use | Yes — but two carry conditions, see below |
+
+Two of the four chat models are **not** under a permissive OSI licence, and the
+difference is operational, not academic:
+
+- **Gemma 3 4B** — Gemma Terms of Use. Commercial use is permitted, but Google's
+  Prohibited Use Policy binds ATOZAS *and* anyone ATOZAS distributes the weights
+  to, and the terms must travel with any redistribution.
+- **Llama 3.2 3B** — Llama 3.2 Community License. Commercial use is permitted
+  only below 700 million monthly active users; above that Meta requires a
+  separate licence. Products built on it must carry a "Built with Llama" notice.
+
+Qwen3-4B (Apache-2.0) and Phi-4-mini (MIT) have no such conditions. If ATOZAS
+ever needs to ship weights to a customer or cross the MAU threshold, the two
+conditioned models are the ones to re-examine.
 
 The no-external-egress property is enforced in code, not by convention:
 `assertSelfHosted()` in `server/src/config/env.js` runs at boot on both the API
@@ -20,6 +34,28 @@ and worker processes and refuses to start if any inference URL resolves outside
 loopback, an RFC1918 private range, or an explicitly allowlisted host. The
 Groq, OpenAI, Anthropic, Gemini, Cohere, OpenRouter and Ollama providers have
 been deleted from the codebase entirely — there is no code path to reach them.
+
+## Serving architecture — one router, four chat models
+
+`llama-server` runs in **router mode**: started without `--model`, it reads
+`deploy/llama/models.ini` and fronts every chat model on `127.0.0.1:8081`,
+spawning a child server per model on demand and evicting the least-recently-used
+one once `--models-max` are resident. The `model` field of each OpenAI-format
+request selects the target, which is how the model picker in the UI works
+without a redeploy.
+
+`--models-max` defaults to **1**. That is a memory decision: each resident Q4 4B
+model costs roughly 2.5 GB of weights plus its KV cache, so keeping all four
+loaded would need ~10 GB that a 16 GB host does not have to spare alongside
+MongoDB, Redis and the Node processes. The cost of the default is that the first
+request after switching models pays a model load from disk.
+
+`models.ini` is **generated**, never hand-edited:
+`server/scripts/generate-llama-preset.mjs` writes it from `modelRegistry.js`, so
+the ids the API resolves and the ids the router serves cannot drift apart. It
+skips models whose GGUF is not on disk, and the provider marks anything missing
+from the router's `/v1/models` as `weights-missing` so the picker greys it out
+instead of failing at generation time.
 
 ---
 
@@ -34,7 +70,7 @@ been deleted from the codebase entirely — there is no code path to reach them.
 | Licence | Apache-2.0 |
 | Commercial use permitted | Yes, without revenue restriction or usage reporting |
 | Attribution required | Retain the Apache-2.0 licence notice |
-| File on disk | `/opt/atozas-ai/models/qwen3-4b/Qwen3-4B-Q4_K_M.gguf` |
+| File on disk | `/opt/atozas-ai/models/chat/Qwen3-4B-Q4_K_M.gguf` |
 | Verified size | 2382 MB |
 | SHA-256 | `7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5` |
 | Transmits data externally | No — served by `llama-server` bound to `127.0.0.1:8081` |
@@ -58,7 +94,90 @@ stream, so hidden reasoning can never reach a user even if the model emits it.
 
 ---
 
-## 2. Embedding model — Qwen3-Embedding-0.6B (Q8_0 GGUF)
+## 2. Chat model — Phi-4-mini-instruct 3.8B (Q4_K_M GGUF)
+
+| Field | Value |
+|---|---|
+| Model name and version | Phi-4-mini-instruct (3.8B) |
+| Quantization | Q4_K_M (4-bit, k-quant medium) |
+| Original repository | https://huggingface.co/microsoft/Phi-4-mini-instruct |
+| GGUF repository | https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF |
+| Publisher | Microsoft |
+| Licence | MIT |
+| Commercial use permitted | Yes, without revenue restriction or usage reporting |
+| Attribution required | Retain the MIT licence notice |
+| File on disk | `/opt/atozas-ai/models/chat/Phi-4-mini-instruct-Q4_K_M.gguf` |
+| Transmits data externally | No — served by the router on `127.0.0.1:8081` |
+| Served by | `atozas-llama.service` |
+
+**Repository choice.** Microsoft publishes safetensors, not GGUF, so the weights
+come from the `unsloth` conversion. It is ungated and MIT-licensed, matching the
+original. The chat template supports a `system` turn, so no prompt rewriting is
+needed.
+
+---
+
+## 3. Chat model — Gemma 3 4B Instruct (Q4_K_M GGUF)
+
+| Field | Value |
+|---|---|
+| Model name and version | gemma-3-4b-it |
+| Quantization | Q4_K_M (4-bit, k-quant medium) |
+| Original repository | https://huggingface.co/google/gemma-3-4b-it |
+| GGUF repository | https://huggingface.co/unsloth/gemma-3-4b-it-GGUF |
+| Publisher | Google DeepMind |
+| Licence | **Gemma Terms of Use** (not an OSI licence) |
+| Commercial use permitted | Yes, subject to the Prohibited Use Policy |
+| Attribution required | Terms must accompany any redistribution; modified weights must be marked as modified |
+| File on disk | `/opt/atozas-ai/models/chat/gemma-3-4b-it-Q4_K_M.gguf` |
+| Transmits data externally | No — served by the router on `127.0.0.1:8081` |
+| Served by | `atozas-llama.service` |
+
+**Licence caution.** The Gemma Terms are more restrictive than Apache-2.0: they
+impose downstream use restrictions that bind anyone ATOZAS passes the weights
+to. Serving inference to end users is fine; redistributing the GGUF requires
+carrying the terms with it.
+
+**System prompt handling.** Gemma 3's chat template defines only `user` and
+`model` turns, with no system turn. This was expected to require rewriting the
+prompt application-side, but llama.cpp's jinja rendering folds a `system`
+message into the first user turn instead of dropping or rejecting it. Verified
+against this exact GGUF: a system instruction to prefix replies with a marker
+token was obeyed, so the ATOZAS safety and citation rules do reach the model and
+no special-casing is needed. Re-check this if the GGUF conversion is ever
+swapped for one with a different embedded template.
+
+---
+
+## 4. Chat model — Llama 3.2 3B Instruct (Q4_K_M GGUF)
+
+| Field | Value |
+|---|---|
+| Model name and version | Llama-3.2-3B-Instruct |
+| Quantization | Q4_K_M (4-bit, k-quant medium) |
+| Original repository | https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct |
+| GGUF repository | https://huggingface.co/unsloth/Llama-3.2-3B-Instruct-GGUF |
+| Publisher | Meta |
+| Licence | **Llama 3.2 Community License** (not an OSI licence) |
+| Commercial use permitted | Yes, below 700M monthly active users |
+| Attribution required | "Built with Llama" notice; Acceptable Use Policy applies |
+| File on disk | `/opt/atozas-ai/models/chat/Llama-3.2-3B-Instruct-Q4_K_M.gguf` |
+| Transmits data externally | No — served by the router on `127.0.0.1:8081` |
+| Served by | `atozas-llama.service` |
+
+**Licence caution.** The 700M MAU ceiling is the clause to watch. Below it,
+commercial use is unrestricted in practice; above it Meta must grant a separate
+licence. The "Built with Llama" notice is required on any product that uses the
+model, which includes ATOZAS AI while this model is selectable.
+
+**Repository choice.** Meta's own repository is licence-gated and requires an
+accepted agreement plus a Hugging Face token to download. The `unsloth`
+conversion is ungated and carries the same Llama 3.2 licence, so the obligations
+above still apply.
+
+---
+
+## 5. Embedding model — Qwen3-Embedding-0.6B (Q8_0 GGUF)
 
 | Field | Value |
 |---|---|

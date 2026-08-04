@@ -15,6 +15,11 @@ export default function MessageBubble({ message }) {
   const isStreaming = useChat((s) => s.isStreaming);
   const editMessage = useChat((s) => s.editMessage);
   const selectVersion = useChat((s) => s.selectVersion);
+  // Falls back to the raw id for models no longer in the catalogue, so old
+  // messages keep attributing their answer to something.
+  const modelLabel = useChat(
+    (s) => s.models.find((m) => m.id === message.model)?.label || message.model,
+  );
 
   const copy = async () => {
     await navigator.clipboard.writeText(message.content);
@@ -150,7 +155,7 @@ export default function MessageBubble({ message }) {
 
         {!streaming && message.content && (
           <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-400">
-            {message.model && <span className="mr-1">{message.model}</span>}
+            {message.model && <span className="mr-1">{modelLabel}</span>}
             <IconButton onClick={copy} title={copied ? 'Copied' : 'Copy'} label={copied ? 'Copied' : 'Copy'}>
               {copied ? <CheckIcon /> : <CopyIcon />}
             </IconButton>

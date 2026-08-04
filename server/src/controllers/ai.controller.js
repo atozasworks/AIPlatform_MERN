@@ -35,7 +35,7 @@ import { logger } from '../config/logger.js';
 
 /** GET /ai/models — engine catalog for the selector. */
 export const listModels = asyncHandler(async (_req, res) =>
-  sendSuccess(res, { models: aiGateway.listModels() }),
+  sendSuccess(res, { models: await aiGateway.listModels(), default: env.ai.llamacpp.defaultModel }),
 );
 
 /** GET /ai/profiles — prompt profiles the client may choose from. */
