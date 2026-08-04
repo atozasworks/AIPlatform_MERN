@@ -40,6 +40,13 @@ const messageSchema = new Schema(
       clientMessageId: { type: String, default: null },
     },
 
+    // Privacy: a user can mark an individual message private. When they do, a
+    // randomly generated unique code is stored here and emailed to them as a
+    // reference/receipt (it is not an access gate — the message stays readable).
+    isPrivate: { type: Boolean, default: false },
+    privateCode: { type: String, default: null, index: true, sparse: true },
+    privateCodeSentAt: { type: Date, default: null },
+
     feedback: { type: String, enum: ['like', 'dislike', null], default: null },
     status: {
       type: String,

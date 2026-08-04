@@ -1,7 +1,7 @@
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
 import { AppError } from '../utils/AppError.js';
-import { registerUser, verifyCredentials, revokeAllSessions } from '../services/auth.service.js';
+import { revokeAllSessions } from '../services/auth.service.js';
 import { User } from '../models/User.js';
 import {
   signAccessToken,
@@ -20,18 +20,6 @@ function clearSession(res) {
   res.clearCookie(COOKIE_NAMES.access, { ...cookieOptions('access'), maxAge: undefined });
   res.clearCookie(COOKIE_NAMES.refresh, { ...cookieOptions('refresh'), maxAge: undefined });
 }
-
-export const register = asyncHandler(async (req, res) => {
-  const user = await registerUser(req.body);
-  issueSession(res, user);
-  return sendSuccess(res, { user: user.toJSON() }, { status: 201 });
-});
-
-export const login = asyncHandler(async (req, res) => {
-  const user = await verifyCredentials(req.body);
-  issueSession(res, user);
-  return sendSuccess(res, { user: user.toJSON() });
-});
 
 export const me = asyncHandler(async (req, res) => {
   return sendSuccess(res, { user: req.user.toJSON() });

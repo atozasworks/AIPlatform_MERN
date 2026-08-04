@@ -19,10 +19,20 @@ const userSchema = new Schema(
       index: true,
       match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'Invalid email address'],
     },
-    passwordHash: { type: String, required: true, select: false },
-    name: { type: String, required: true, trim: true, maxlength: 120 },
+    // Optional: accounts created via email OTP or Google Sign-In have no password.
+    passwordHash: { type: String, select: false },
+    // Not required: atozas-auth-kit-express creates email-OTP users without a
+    // name, so we derive one from the email in the pre-validate hook below.
+    name: { type: String, trim: true, maxlength: 120 },
     avatarUrl: { type: String, default: '' },
+    // Profile picture URL as written by atozas-auth-kit-express (Google `picture`).
+    picture: { type: String, default: '' },
+    // Which mechanism onboarded the account, per atozas-auth-kit-express.
+    provider: { type: String, enum: ['email', 'google', 'password'], default: undefined },
     roles: { type: [String], enum: ['user', 'admin'], default: ['user'] },
+
+    // Google Sign-In subject id ("sub"). Sparse so password/OTP users don't collide on null.
+    googleId: { type: String, index: true, sparse: true, default: undefined },
 
     emailVerified: { type: Boolean, default: false },
 
@@ -45,6 +55,20 @@ const userSchema = new Schema(
   },
   { timestamps: true },
 );
+
+/**
+ * Guarantees a display name. atozas-auth-kit-express onboards email-OTP users
+ * with only `{ email, provider }`, so derive a friendly name from the local-part
+ * when one is absent (mirrors the legacy auth service behaviour).
+ */
+userSchema.pre('validate', function deriveName(next) {
+  if (!this.name) {
+    const local = String(this.email || 'user').split('@')[0] || 'user';
+    const cleaned = local.replace(/[._-]+/g, ' ').trim();
+    this.name = `${cleaned.charAt(0).toUpperCase()}${cleaned.slice(1)}` || 'User';
+  }
+  next();
+});
 
 userSchema.methods.setPassword = async function setPassword(plain) {
   const rounds = 12;

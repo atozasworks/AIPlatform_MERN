@@ -1,9 +1,14 @@
+import { customAlphabet } from 'nanoid';
+
 import { Conversation } from '../models/Conversation.js';
 import { Message } from '../models/Message.js';
 import { AppError } from '../utils/AppError.js';
 import { aiGateway } from './ai/AIGateway.js';
 import { isValidProfile } from './ai/prompts.js';
 import { env } from '../config/env.js';
+
+// Unambiguous alphabet (no 0/O/1/I) for a human-copyable, unique private code.
+const generatePrivateCode = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 12);
 
 /** Lean docs only have `_id`; map to `id` so the client matches mongoose toJSON. */
 export function withId(doc) {
@@ -208,6 +213,46 @@ export async function prepareMessageEdit(userId, conversationId, messageId) {
     messageId: String(target._id),
     parentMessageId: target.parentMessage ? String(target.parentMessage) : null,
   };
+}
+
+/** Reserves a private code that no other message currently holds. */
+async function reserveUniquePrivateCode(attempts = 5) {
+  for (let i = 0; i < attempts; i += 1) {
+    const code = generatePrivateCode();
+    // eslint-disable-next-line no-await-in-loop
+    const clash = await Message.exists({ privateCode: code });
+    if (!clash) return code;
+  }
+  throw new AppError(500, 'Could not generate a unique private code. Please try again.', {
+    code: 'PRIVATE_CODE_GENERATION_FAILED',
+  });
+}
+
+/**
+ * Marks a single (owned) message private and links a randomly generated unique
+ * code to it. Idempotent: re-marking an already-private message keeps its code.
+ * The code is a reference/receipt (emailed by the controller), not an access
+ * gate — the message remains readable to its owner.
+ */
+export async function setMessagePrivate(userId, conversationId, messageId) {
+  await getOwnedConversation(userId, conversationId);
+
+  const message = await Message.findOne({
+    _id: messageId,
+    conversation: conversationId,
+    user: userId,
+    deletedAt: null,
+  });
+  if (!message) throw AppError.notFound('Message not found');
+
+  if (!message.isPrivate || !message.privateCode) {
+    message.isPrivate = true;
+    message.privateCode = await reserveUniquePrivateCode();
+    message.privateCodeSentAt = null;
+    await message.save();
+  }
+
+  return message;
 }
 
 /**

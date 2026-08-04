@@ -122,6 +122,41 @@ export const env = {
     sameSite: isProd ? 'strict' : 'lax',
   },
 
+  /**
+   * Passwordless email OTP + Google Sign-In.
+   *
+   * OTP delivery uses SMTP (Gmail by default). When SMTP credentials are absent
+   * the email service falls back to logging the code (development only) so the
+   * flow stays testable without wiring a mailbox.
+   */
+  auth: {
+    otp: {
+      length: num(process.env.OTP_LENGTH, 6),
+      ttlMinutes: num(process.env.OTP_TTL_MINUTES, 10),
+      maxAttempts: num(process.env.OTP_MAX_ATTEMPTS, 5),
+      // Minimum seconds between two code requests for the same email.
+      resendCooldownSeconds: num(process.env.OTP_RESEND_COOLDOWN_SECONDS, 60),
+    },
+    google: {
+      // Same value is exposed to the client as VITE_GOOGLE_CLIENT_ID at build time.
+      clientId: process.env.GOOGLE_CLIENT_ID || '',
+      get enabled() {
+        return Boolean(this.clientId);
+      },
+    },
+  },
+
+  email: {
+    // When false (or SMTP creds missing) OTP codes are logged instead of sent.
+    enabled: bool(process.env.EMAIL_ENABLED, false),
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: num(process.env.SMTP_PORT, 465),
+    secure: bool(process.env.SMTP_SECURE, true),
+    user: process.env.SMTP_USER || '',
+    pass: process.env.SMTP_PASS || '',
+    from: process.env.MAIL_FROM || process.env.SMTP_USER || 'ATOZAS AI <no-reply@atozasai.com>',
+  },
+
   ai: {
     // Only self-hosted engines are selectable. There is no external fallback.
     defaultProvider: process.env.DEFAULT_AI_PROVIDER || 'llamacpp',

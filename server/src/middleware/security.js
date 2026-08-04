@@ -17,6 +17,17 @@ import { AppError } from '../utils/AppError.js';
  * from the same origin, so the policy can stay strict.
  */
 export function helmetMiddleware() {
+  // Google Identity Services (the "Continue with Google" button) loads a script
+  // and an iframe from accounts.google.com and serves avatars from
+  // googleusercontent.com. These are only allowed when Google Sign-In is
+  // configured, so the policy stays maximally strict otherwise.
+  const googleEnabled = env.auth.google.enabled;
+  const gsiScript = googleEnabled ? ['https://accounts.google.com/gsi/client'] : [];
+  const gsiConnect = googleEnabled ? ['https://accounts.google.com/gsi/'] : [];
+  const gsiFrame = googleEnabled ? ['https://accounts.google.com/gsi/'] : [];
+  const gsiStyle = googleEnabled ? ['https://accounts.google.com/gsi/style'] : [];
+  const gsiImg = googleEnabled ? ['https://*.googleusercontent.com'] : [];
+
   return helmet({
     contentSecurityPolicy: {
       useDefaults: true,
@@ -24,15 +35,16 @@ export function helmetMiddleware() {
         defaultSrc: ["'self'"],
         // The SPA calls only its own origin; the AI engine is never reachable
         // from the browser, it sits behind the API on loopback.
-        connectSrc: ["'self'", ...env.corsOrigins],
-        imgSrc: ["'self'", 'data:', 'blob:'],
-        scriptSrc: ["'self'"],
+        connectSrc: ["'self'", ...env.corsOrigins, ...gsiConnect],
+        imgSrc: ["'self'", 'data:', 'blob:', ...gsiImg],
+        scriptSrc: ["'self'", ...gsiScript],
         scriptSrcAttr: ["'none'"],
         // Tailwind injects styles at build time, but the runtime still needs
         // inline style attributes for dynamic values. No external stylesheets.
-        styleSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'", ...gsiStyle],
         fontSrc: ["'self'", 'data:'],
         objectSrc: ["'none'"],
+        frameSrc: ["'self'", ...gsiFrame],
         frameAncestors: ["'none'"],
         baseUri: ["'self'"],
         formAction: ["'self'"],

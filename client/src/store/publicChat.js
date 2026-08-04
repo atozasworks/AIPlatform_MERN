@@ -1,20 +1,14 @@
 import { create } from 'zustand';
 import { api } from '../lib/api.js';
-import { streamPublicChat, streamEphemeralChat } from '../lib/publicStream.js';
+import { streamPublicChat } from '../lib/publicStream.js';
 
 /**
  * Pre-login chat store. Completely separate from `useChat` so authenticated
  * conversations, branching, and resume logic stay untouched.
  *
- * Modes:
- *  - public  (default): shared history loaded from / persisted to the server
- *  - private: in-memory only; never written to durable storage
+ * There is a single shared public room: every message is persisted and visible
+ * to every visitor. (The former Public/Private mode toggle has been removed.)
  */
-
-export const MODE = {
-  PUBLIC: 'public',
-  PRIVATE: 'private',
-};
 
 export const PHASE = {
   IDLE: 'idle',
@@ -33,7 +27,6 @@ const emptyGeneration = {
 };
 
 export const usePublicChat = create((set, get) => ({
-  mode: MODE.PUBLIC,
   messages: [],
   room: null,
   selectedProvider: 'llamacpp',
@@ -77,66 +70,25 @@ export const usePublicChat = create((set, get) => ({
     set({ loadingHistory: true, historyError: null });
     try {
       const { room, messages } = await api.get('/public/room');
-      // Only apply if still in public mode (user may have switched mid-fetch).
-      if (get().mode === MODE.PUBLIC) {
-        set({
-          room,
-          messages: (messages || []).map((m) => ({
-            id: m.id,
-            role: m.role,
-            content: m.content || '',
-            status: m.status || 'complete',
-            model: m.model,
-            provider: m.provider,
-            createdAt: m.createdAt,
-          })),
-          loadingHistory: false,
-        });
-      } else {
-        set({ loadingHistory: false });
-      }
+      set({
+        room,
+        messages: (messages || []).map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content || '',
+          status: m.status || 'complete',
+          model: m.model,
+          provider: m.provider,
+          createdAt: m.createdAt,
+        })),
+        loadingHistory: false,
+      });
     } catch (err) {
       set({
         loadingHistory: false,
         historyError: err.message || 'Could not load public chat history.',
       });
     }
-  },
-
-  /**
-   * Switch Public ↔ Private. Private always starts blank; Public reloads shared history.
-   */
-  async setMode(mode) {
-    if (mode !== MODE.PUBLIC && mode !== MODE.PRIVATE) return;
-    if (get().mode === mode) return;
-
-    // Abort any in-flight generation when switching modes.
-    const stream = get()._stream;
-    if (stream) await stream.cancel().catch(() => {});
-
-    if (mode === MODE.PRIVATE) {
-      set({
-        mode: MODE.PRIVATE,
-        messages: [],
-        room: null,
-        historyError: null,
-        generation: { ...emptyGeneration },
-        isStreaming: false,
-        _stream: null,
-      });
-      return;
-    }
-
-    set({
-      mode: MODE.PUBLIC,
-      messages: [],
-      generation: { ...emptyGeneration },
-      isStreaming: false,
-      _stream: null,
-      loadingHistory: true,
-      historyError: null,
-    });
-    // History is loaded by PublicChatPage when it observes mode === public.
   },
 
   async stopStreaming() {
@@ -153,7 +105,6 @@ export const usePublicChat = create((set, get) => ({
     const content = text.trim();
     if (!content || get().generation.phase !== PHASE.IDLE) return;
 
-    const mode = get().mode;
     const clientMessageId = crypto.randomUUID();
     let userId = `tmp-user-${clientMessageId}`;
     let assistantId = `tmp-assistant-${clientMessageId}`;
@@ -174,15 +125,6 @@ export const usePublicChat = create((set, get) => ({
       model: null,
       createdAt: new Date().toISOString(),
     };
-
-    // Snapshot prior turns for ephemeral (private) mode before appending.
-    const priorHistory =
-      mode === MODE.PRIVATE
-        ? get()
-            .messages.filter((m) => m.role === 'user' || m.role === 'assistant')
-            .filter((m) => m.status !== 'error')
-            .map((m) => ({ role: m.role, content: m.content }))
-        : [];
 
     set((s) => ({ messages: [...s.messages, userMsg, assistantMsg] }));
     get()._setGeneration({ phase: PHASE.QUEUED, notice: null, position: 0 });
@@ -286,11 +228,7 @@ export const usePublicChat = create((set, get) => ({
       clientMessageId,
     };
 
-    const stream =
-      mode === MODE.PUBLIC
-        ? streamPublicChat(payload, handlers)
-        : streamEphemeralChat({ ...payload, history: priorHistory }, handlers);
-
+    const stream = streamPublicChat(payload, handlers);
     set({ _stream: stream });
   },
 }));

@@ -2,7 +2,6 @@ import { useEffect } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './store/auth.js';
 import LoginPage from './pages/LoginPage.jsx';
-import RegisterPage from './pages/RegisterPage.jsx';
 import ChatPage from './pages/ChatPage.jsx';
 import PublicChatPage from './pages/PublicChatPage.jsx';
 import Spinner from './components/ui/Spinner.jsx';
@@ -58,14 +57,8 @@ export default function App() {
           </PublicOnlyRoute>
         }
       />
-      <Route
-        path="/register"
-        element={
-          <PublicOnlyRoute>
-            <RegisterPage />
-          </PublicOnlyRoute>
-        }
-      />
+      {/* Registration is implicit (accounts are created on first OTP/Google login). */}
+      <Route path="/register" element={<Navigate to="/login" replace />} />
       {/* Explicit guest chat URL (same page as anonymous `/`). */}
       <Route
         path="/chat"

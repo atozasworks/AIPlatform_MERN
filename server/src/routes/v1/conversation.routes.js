@@ -7,6 +7,7 @@ import {
   conversationIdSchema,
   listConversationsSchema,
   editMessageSchema,
+  messageIdSchema,
 } from '../../validators/conversation.validator.js';
 import {
   chatStreamSchema,
@@ -28,6 +29,12 @@ router.post(
   '/:id/messages/:messageId/edit',
   validate(editMessageSchema),
   conversationController.editMessage,
+);
+// Mark a single message private: links a unique code + emails it as a receipt.
+router.post(
+  '/:id/messages/:messageId/private',
+  validate(messageIdSchema),
+  conversationController.makeMessagePrivate,
 );
 router.patch('/:id', validate(updateConversationSchema), conversationController.update);
 router.delete('/:id', validate(conversationIdSchema), conversationController.remove);
