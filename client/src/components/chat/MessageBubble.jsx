@@ -15,25 +15,11 @@ export default function MessageBubble({ message }) {
   const isStreaming = useChat((s) => s.isStreaming);
   const editMessage = useChat((s) => s.editMessage);
   const selectVersion = useChat((s) => s.selectVersion);
-  const markMessagePrivate = useChat((s) => s.markMessagePrivate);
-  const [privacyBusy, setPrivacyBusy] = useState(false);
-  const [privacyError, setPrivacyError] = useState('');
-
-  const isTemp = String(message.id).startsWith('tmp-');
-  const canMarkPrivate = !isTemp && !message.isPrivate && !isStreaming;
-
-  const makePrivate = async () => {
-    if (!canMarkPrivate || privacyBusy) return;
-    setPrivacyBusy(true);
-    setPrivacyError('');
-    try {
-      await markMessagePrivate(message.id);
-    } catch (err) {
-      setPrivacyError(err?.message || 'Could not mark this message private.');
-    } finally {
-      setPrivacyBusy(false);
-    }
-  };
+  // Falls back to the raw id for models no longer in the catalogue, so old
+  // messages keep attributing their answer to something.
+  const modelLabel = useChat(
+    (s) => s.models.find((m) => m.id === message.model)?.label || message.model,
+  );
 
   const copy = async () => {
     await navigator.clipboard.writeText(message.content);
@@ -184,7 +170,7 @@ export default function MessageBubble({ message }) {
 
         {!streaming && message.content && (
           <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-400">
-            {message.model && <span className="mr-1">{message.model}</span>}
+            {message.model && <span className="mr-1">{modelLabel}</span>}
             <IconButton onClick={copy} title={copied ? 'Copied' : 'Copy'} label={copied ? 'Copied' : 'Copy'}>
               {copied ? <CheckIcon /> : <CopyIcon />}
             </IconButton>

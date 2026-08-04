@@ -38,14 +38,26 @@ class AIGateway {
     return provider;
   }
 
-  /** Every model across registered engines, annotated with availability. */
-  listModels({ onlyAvailable = false } = {}) {
+  /**
+   * Every model across registered engines, annotated with availability.
+   *
+   * Refreshes each engine's served-model snapshot first (cached behind a TTL),
+   * so the picker reflects what the engine can actually load right now rather
+   * than what the configuration hopes for.
+   */
+  async listModels({ onlyAvailable = false } = {}) {
+    await Promise.all(
+      [...this.providers.values()].map((p) => p.refreshCatalog?.().catch(() => null)),
+    );
+
     const models = [];
     for (const provider of this.providers.values()) {
       const available = provider.isAvailable();
       if (onlyAvailable && !available) continue;
       for (const m of provider.getAvailableModels()) {
-        models.push({ ...m, available: available && m.available !== false });
+        const usable = available && m.available !== false;
+        if (onlyAvailable && !usable) continue;
+        models.push({ ...m, available: usable });
       }
     }
     return models;
@@ -70,8 +82,17 @@ class AIGateway {
       );
     }
 
+    // Selection is validated against the configured catalog rather than the
+    // live one: the router loads a model on demand, so a model that is merely
+    // not resident yet must still be selectable. Genuinely missing weights
+    // surface as a provider error on the first request.
     const supported = target.getAvailableModels().map((m) => m.id);
-    const resolvedModel = model && supported.includes(model) ? model : supported[0];
+    const resolvedModel =
+      model && supported.includes(model)
+        ? model
+        : supported.includes(target.defaultModel)
+          ? target.defaultModel
+          : supported[0];
 
     if (!resolvedModel) {
       throw new AppError(503, 'No model is currently loaded on the inference engine.', {

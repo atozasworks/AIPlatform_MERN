@@ -162,14 +162,31 @@ export const env = {
     defaultProvider: process.env.DEFAULT_AI_PROVIDER || 'llamacpp',
     defaultProfile: process.env.DEFAULT_PROMPT_PROFILE || 'balanced',
 
-    /** Chat model served by `llama-server` (OpenAI-format endpoint at {baseUrl}/v1). */
+    /**
+     * Chat models served by `llama-server` in router mode (OpenAI-format
+     * endpoint at {baseUrl}/v1).
+     *
+     * One router process fronts every chat model and spawns a child server per
+     * model on demand, evicting least-recently-used ones once `routerMaxLoaded`
+     * are resident. That is what makes a four-model picker affordable on a
+     * CPU box: only the selected model holds weights and KV cache in RAM.
+     */
     llamacpp: {
       enabled: bool(process.env.LLAMACPP_ENABLED, true),
       baseUrl: llamacppBaseUrl,
       // llama-server only checks this when started with --api-key.
       apiKey: process.env.LLAMACPP_API_KEY || '',
-      model: process.env.LLAMACPP_MODEL || 'qwen3-4b-instruct',
+      // Empty = every chat model in modelRegistry.js. Narrow it per deployment
+      // when a host does not have all the weights on disk.
+      models: list(process.env.LLAMACPP_MODELS),
+      defaultModel: process.env.LLAMACPP_MODEL || 'qwen3-4b-instruct',
+      // Fallback prompt budget for models with no registry runtime entry.
       contextWindow: num(process.env.LLAMACPP_CONTEXT_WINDOW, 8192),
+      // Mirrors --models-max. 1 keeps a single model resident, which is the
+      // only safe setting on a 16 GB box; raise it when RAM allows.
+      routerMaxLoaded: num(process.env.LLAMACPP_MODELS_MAX, 1),
+      // How long the cached /v1/models availability snapshot stays fresh.
+      catalogTtlMs: num(process.env.LLAMACPP_CATALOG_TTL_MS, 30000),
       // Wall-clock ceiling for one generation on CPU before the worker aborts.
       requestTimeoutMs: num(process.env.LLAMACPP_REQUEST_TIMEOUT_MS, 300000),
       // Qwen3 supports a reasoning mode; CPU-only deployments keep it off.

@@ -18,34 +18,16 @@ readonly MODEL_ROOT=/opt/atozas-ai/models
 readonly SERVICE_USER=atozas-ai
 
 # ── Model catalogue ──
-# Repository ids and filenames are verified against the Hugging Face API — a
-# wrong one fails as an opaque HTTP 401 (HF masks "not found" to avoid
-# disclosing private repositories), which is easy to misread as an auth issue.
-readonly CHAT_FILE="Qwen3-4B-Q4_K_M.gguf"
-readonly CHAT_DIR="${MODEL_ROOT}/qwen3-4b"
-readonly CHAT_REPO="Qwen/Qwen3-4B-GGUF"
-readonly CHAT_URL="https://huggingface.co/${CHAT_REPO}/resolve/main/${CHAT_FILE}?download=true"
-readonly CHAT_LICENSE="Apache-2.0"
-
-# Qwen's own GGUF release. multilingual-e5-small was the original choice, but
-# no working GGUF conversion of it exists for current llama.cpp: the builds
-# either fail to load ("bert model needs to define token type count"), crash on
-# quantized token-type tensors, or load but produce a degenerate embedding
-# space. deploy/MODELS.md records the measurements.
-readonly EMBED_FILE="Qwen3-Embedding-0.6B-Q8_0.gguf"
+# The catalogue is not written out here. It comes from the model registry via
+# server/scripts/model-manifest.mjs, so adding a model to the application and
+# making it downloadable are the same edit. The manifest carries the expected
+# SHA-256 too, read from server/.env by the registry itself.
+#
+# All chat models live in one directory because llama-server runs in router
+# mode and is pointed at a single preset file listing every model.
+readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+readonly CHAT_DIR="${MODEL_ROOT}/chat"
 readonly EMBED_DIR="${MODEL_ROOT}/embeddings"
-readonly EMBED_REPO="Qwen/Qwen3-Embedding-0.6B-GGUF"
-readonly EMBED_URL="https://huggingface.co/${EMBED_REPO}/resolve/main/${EMBED_FILE}?download=true"
-readonly EMBED_LICENSE="Apache-2.0"
-
-# Expected checksums, sourced from server/.env if present.
-ENV_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/server/.env"
-EXPECTED_CHAT="${MODEL_SHA256_QWEN3_4B:-}"
-EXPECTED_EMBED="${MODEL_SHA256_EMBEDDING:-}"
-if [[ -f "${ENV_FILE}" ]]; then
-  EXPECTED_CHAT="${EXPECTED_CHAT:-$(grep -E '^MODEL_SHA256_QWEN3_4B=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"'"'"' ')}"
-  EXPECTED_EMBED="${EXPECTED_EMBED:-$(grep -E '^MODEL_SHA256_EMBEDDING=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"'"'"' ')}"
-fi
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
@@ -54,10 +36,11 @@ die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "Run as root (sudo)."
 command -v curl >/dev/null || die "curl is required."
 command -v sha256sum >/dev/null || die "sha256sum is required."
+command -v node >/dev/null || die "node is required (the catalogue comes from the model registry)."
 
-# ── Disk space guard: the chat model is ~2.5 GB ──
+# ── Disk space guard: four Q4 chat models plus embeddings is roughly 10 GB ──
 AVAIL_KB=$(df -Pk "${MODEL_ROOT%/*}" | awk 'NR==2 {print $4}')
-(( AVAIL_KB > 8 * 1024 * 1024 )) || die "Less than 8 GB free on the model volume."
+(( AVAIL_KB > 12 * 1024 * 1024 )) || die "Less than 12 GB free on the model volume."
 
 fetch() {
   local name="$1" url="$2" dir="$3" file="$4" expected="$5" license="$6"
@@ -99,17 +82,34 @@ fetch() {
   printf '    %s (%s)\n' "${path}" "$(du -h "${path}" | cut -f1)"
 }
 
-fetch "Qwen3-4B-Q4_K_M"        "${CHAT_URL}"  "${CHAT_DIR}"  "${CHAT_FILE}"  "${EXPECTED_CHAT}"  "${CHAT_LICENSE}"
-fetch "Qwen3-Embedding-0.6B"   "${EMBED_URL}" "${EMBED_DIR}" "${EMBED_FILE}" "${EXPECTED_EMBED}" "${EMBED_LICENSE}"
+# Tab-separated so the loop needs no jq: id, role, file, url, licence, sha256.
+while IFS=$'\t' read -r id role file url license expected; do
+  [[ -n "${id}" ]] || continue
+  if [[ "${role}" == "embedding" ]]; then
+    dir="${EMBED_DIR}"
+  else
+    dir="${CHAT_DIR}"
+  fi
+  fetch "${id}" "${url}" "${dir}" "${file}" "${expected}" "${license}"
+done < <(node "${REPO_ROOT}/server/scripts/model-manifest.mjs" --format tsv)
+
+# Rebuild the router preset so llama-server serves exactly what is on disk.
+log 'Generating the llama-server router preset'
+node "${REPO_ROOT}/server/scripts/generate-llama-preset.mjs" \
+  --models-dir "${CHAT_DIR}" \
+  --out "${REPO_ROOT}/deploy/llama/models.ini"
 
 cat <<EOF
 
 $(log 'Models ready')
 
-  Chat:      ${CHAT_DIR}/${CHAT_FILE}        (${CHAT_LICENSE}, commercial use permitted)
-  Embedding: ${EMBED_DIR}/${EMBED_FILE}      (${EMBED_LICENSE}, commercial use permitted)
+  Chat models:  ${CHAT_DIR}
+  Embedding:    ${EMBED_DIR}
+  Router preset: ${REPO_ROOT}/deploy/llama/models.ini
 
-Both run entirely on this host. No data is transmitted externally.
+Every model runs entirely on this host. No data is transmitted externally.
+Licence obligations per model are recorded in deploy/MODELS.md - Gemma 3 and
+Llama 3.2 carry use restrictions that Apache-2.0 and MIT do not.
 
 Start the services:
   sudo systemctl enable --now atozas-llama atozas-llama-embed

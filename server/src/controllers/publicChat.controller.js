@@ -64,7 +64,7 @@ async function assertInferenceReady() {
 
 /** GET /public/models */
 export const listModels = asyncHandler(async (_req, res) =>
-  sendSuccess(res, { models: aiGateway.listModels() }),
+  sendSuccess(res, { models: await aiGateway.listModels() }),
 );
 
 /** GET /public/profiles */

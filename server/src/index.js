@@ -4,6 +4,7 @@ import { connectDatabase, disconnectDatabase } from './config/db.js';
 import { closeRedis } from './config/redis.js';
 import { closeQueue } from './services/queue/llmQueue.js';
 import { initSockets } from './sockets/index.js';
+import { resolveEnabledChatModelIds } from './services/ai/modelRegistry.js';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 
@@ -43,7 +44,11 @@ async function start() {
 
   server.listen(env.port, () => {
     logger.info(
-      { engine: env.ai.defaultProvider, model: env.ai.llamacpp.model },
+      {
+        engine: env.ai.defaultProvider,
+        models: resolveEnabledChatModelIds(),
+        defaultModel: env.ai.llamacpp.defaultModel,
+      },
       `ATOZAS AI API listening on ${env.backendUrl} (${env.nodeEnv})`,
     );
   });

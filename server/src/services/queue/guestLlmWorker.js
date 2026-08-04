@@ -125,7 +125,7 @@ export async function processGuestJob(job) {
       history,
       currentTurn,
       maxOutputTokens: profile.maxTokens,
-      contextWindow: provider.contextWindow,
+      contextWindow: provider.getContextWindow?.(model) ?? provider.contextWindow,
     });
 
     const abort = new AbortController();

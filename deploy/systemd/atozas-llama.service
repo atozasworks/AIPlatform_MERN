@@ -1,5 +1,5 @@
 [Unit]
-Description=ATOZAS llama.cpp chat server (Qwen3-4B-Q4_K_M, CPU)
+Description=ATOZAS llama.cpp chat router (Qwen3-4B, Phi-4-mini, Gemma 3 4B, Llama 3.2 3B; CPU)
 Documentation=https://github.com/ggml-org/llama.cpp
 After=network-online.target
 Wants=network-online.target
@@ -33,9 +33,21 @@ Environment=LLAMA_CTX_SIZE=16384
 # Prevents OpenMP from spawning more threads than we allocated.
 Environment=OMP_NUM_THREADS=8
 
+# ── Router mode ──
+# Omitting --model is what makes llama-server a router: it fronts port 8081 and
+# spawns a child server per model listed in models.ini, routing each request by
+# its `model` field. LLAMA_MODELS_MAX models stay resident and the
+# least-recently-used one is evicted beyond that, so the four-model picker in
+# the UI costs one model's RAM at a time rather than four.
+#
+# Raise LLAMA_MODELS_MAX only after checking MemoryMax below: each additional
+# resident Q4 4B model is roughly 2.5 GB of weights plus its 16k KV cache.
+Environment=LLAMA_MODELS_MAX=1
+Environment=LLAMA_MODELS_PRESET=/opt/atozas-ai/app/deploy/llama/models.ini
+
 ExecStart=/opt/atozas-ai/llama.cpp/build/bin/llama-server \
-  --model /opt/atozas-ai/models/qwen3-4b/Qwen3-4B-Q4_K_M.gguf \
-  --alias qwen3-4b-instruct \
+  --models-preset ${LLAMA_MODELS_PRESET} \
+  --models-max ${LLAMA_MODELS_MAX} \
   --host 127.0.0.1 \
   --port 8081 \
   --threads ${LLAMA_THREADS} \
@@ -59,12 +71,15 @@ RestartSec=5
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
-# Loading a 2.5 GB model with --mlock takes time on a cold page cache.
+# The router itself starts in seconds; models load lazily on first use, so this
+# only has to cover parsing the preset.
 TimeoutStartSec=300
 # SIGINT lets llama-server finish in-flight slots before exiting.
 KillSignal=SIGINT
 TimeoutStopSec=30
-KillMode=mixed
+# control-group, not mixed: the router's per-model child servers must be reaped
+# with it, or a restart leaves orphans holding port bindings and gigabytes.
+KillMode=control-group
 
 # ── Resource controls ──
 # Hard ceiling well under the 32 GB box so a runaway context cannot OOM Mongo,
@@ -93,8 +108,10 @@ RestrictRealtime=true
 RestrictNamespaces=true
 LockPersonality=true
 MemoryDenyWriteExecute=false
-# Model directory is read-only to the service; only the deploy script writes it.
+# Model directory and router preset are read-only to the service; only the
+# deploy script writes them.
 ReadOnlyPaths=/opt/atozas-ai/models
+ReadOnlyPaths=/opt/atozas-ai/app/deploy/llama
 # Loopback only — the model must never be reachable from the internet.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 IPAddressAllow=localhost

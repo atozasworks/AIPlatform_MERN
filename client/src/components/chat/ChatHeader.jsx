@@ -1,4 +1,5 @@
 import ThemeToggle from '../ui/ThemeToggle.jsx';
+import ModelPicker from './ModelPicker.jsx';
 import { useAuth } from '../../store/auth.js';
 
 export default function ChatHeader({ onToggleSidebar }) {
@@ -26,6 +27,7 @@ export default function ChatHeader({ onToggleSidebar }) {
           <line x1="3" y1="18" x2="21" y2="18" />
         </svg>
       </button>
+      <ModelPicker />
       <div className="ml-auto flex items-center gap-3">
         <ThemeToggle />
         <div

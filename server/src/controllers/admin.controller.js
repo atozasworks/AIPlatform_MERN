@@ -24,7 +24,10 @@ export const aiStatus = asyncHandler(async (_req, res) => {
   const [report, metrics] = await Promise.all([readinessReport(), getMetricsSnapshot()]);
 
   const llamacpp = aiGateway.providers.get('llamacpp');
-  const serverProps = llamacpp?.isAvailable() ? await llamacpp.getServerProps() : null;
+  const [serverProps, chatModels] = await Promise.all([
+    llamacpp?.isAvailable() ? llamacpp.getServerProps() : null,
+    aiGateway.listModels(),
+  ]);
 
   return sendSuccess(res, {
     ready: report.ready,
@@ -34,7 +37,20 @@ export const aiStatus = asyncHandler(async (_req, res) => {
 
     inference: {
       defaultProvider: env.ai.defaultProvider,
+      defaultModel: env.ai.llamacpp.defaultModel,
       configuredContextWindow: env.ai.llamacpp.contextWindow,
+      // Router mode keeps at most this many models resident, evicting by LRU.
+      maxLoadedModels: env.ai.llamacpp.routerMaxLoaded,
+      // Which of the configured models the router is actually serving, and why
+      // any of them are not.
+      models: chatModels.map((m) => ({
+        id: m.id,
+        provider: m.provider,
+        available: m.available,
+        unavailableReason: m.unavailableReason || null,
+        contextWindow: m.contextWindow,
+        license: m.license,
+      })),
       // What llama-server actually loaded, which can differ from the .env.
       runtime: serverProps,
       thinkingMode: env.ai.llamacpp.thinking ? 'enabled' : 'disabled',

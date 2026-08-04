@@ -19,7 +19,8 @@ export class OpenAICompatibleProvider extends BaseProvider {
   /**
    * @param {{ id:string, label:string, apiKey?:string, baseUrl:string,
    *           defaultModel:string, contextWindow:number, requestTimeoutMs?:number,
-   *           models?:Array<object>, extraBody?:object }} config
+   *           models?:Array<object>, extraBody?:object,
+   *           modelRuntimes?:Record<string, object> }} config
    */
   constructor(config) {
     super({ id: config.id, label: config.label });
@@ -32,6 +33,12 @@ export class OpenAICompatibleProvider extends BaseProvider {
     this.models = config.models || [];
     // Engine-specific fields merged into every payload (e.g. Qwen3 thinking off).
     this.extraBody = config.extraBody || {};
+    /**
+     * Per-model serving quirks, keyed by model id. A model absent from this map
+     * falls back to the engine-wide defaults.
+     * @type {Record<string, { contextWindow?:number, extraBody?:object }>}
+     */
+    this.modelRuntimes = config.modelRuntimes || {};
     this.enabled = true;
   }
 
@@ -42,6 +49,15 @@ export class OpenAICompatibleProvider extends BaseProvider {
   getAvailableModels() {
     const available = this.isAvailable();
     return this.models.map((m) => ({ ...m, provider: this.id, available }));
+  }
+
+  /**
+   * Prompt budget for one model. The worker sizes the conversation history
+   * against this, so a per-model value is what stops a small-context model
+   * being handed a prompt built for a larger one.
+   */
+  getContextWindow(model) {
+    return this.modelRuntimes[model]?.contextWindow ?? this.contextWindow;
   }
 
   #ensureAvailable() {
@@ -62,8 +78,10 @@ export class OpenAICompatibleProvider extends BaseProvider {
    */
   #payload(model, messages, options, stream) {
     const sampling = options.sampling || {};
+    const target = model || this.defaultModel;
+
     return {
-      model: model || this.defaultModel,
+      model: target,
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
       stream,
       ...(stream ? { stream_options: { include_usage: true } } : {}),
@@ -73,6 +91,7 @@ export class OpenAICompatibleProvider extends BaseProvider {
       ...(options.maxTokens != null ? { max_tokens: options.maxTokens } : {}),
       ...(options.stop ? { stop: options.stop } : {}),
       ...this.extraBody,
+      ...(this.modelRuntimes[target]?.extraBody || {}),
     };
   }
 
