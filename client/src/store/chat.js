@@ -113,6 +113,34 @@ export const useChat = create((set, get) => ({
     if (get().activeId === id) get()._syncPath(messages, {});
   },
 
+  /**
+   * Mark a message private: the server links a unique code to it and emails the
+   * code to the user as a receipt. Updates the local message with the code.
+   */
+  async markMessagePrivate(messageId) {
+    if (String(messageId).startsWith('tmp-')) return null;
+    const activeId = get().activeId;
+    if (!activeId) return null;
+
+    const { message, emailDelivered } = await api.post(
+      `/conversations/${activeId}/messages/${messageId}/private`,
+    );
+
+    const next = get().allMessages.map((m) =>
+      m.id === messageId
+        ? {
+            ...m,
+            isPrivate: true,
+            privateCode: message.privateCode,
+            privateCodeSentAt: message.privateCodeSentAt,
+          }
+        : m,
+    );
+    get()._syncPath(next, get().branchChoices);
+
+    return { privateCode: message.privateCode, emailDelivered };
+  },
+
   async deleteConversation(id) {
     await api.delete(`/conversations/${id}`);
     set((s) => ({

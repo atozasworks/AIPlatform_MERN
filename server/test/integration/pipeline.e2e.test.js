@@ -198,23 +198,23 @@ before(async () => {
   await new Promise((resolve) => apiServer.listen(0, '127.0.0.1', resolve));
   baseUrl = `http://127.0.0.1:${apiServer.address().port}`;
 
-  // Register a user and capture the auth cookies.
-  const register = await fetch(`${baseUrl}/api/v1/auth/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      email: `e2e-${RUN_ID}@atozasai.com`,
-      password: 'E2eTestPassword!234',
-      name: 'E2E Tester',
-    }),
-  });
-  const registerBody = await register.text();
-  assert.equal(register.status, 201, `registration failed: ${registerBody}`);
+  // Auth is passwordless (email OTP / Google), so seed a user directly and mint
+  // session cookies with the token helper rather than driving the OTP email flow.
+  const [{ User }, tokens] = await Promise.all([
+    import('../../src/models/User.js'),
+    import('../../src/utils/tokens.js'),
+  ]);
 
-  cookies = register.headers
-    .getSetCookie()
-    .map((c) => c.split(';')[0])
-    .join('; ');
+  const user = await User.create({
+    email: `e2e-${RUN_ID}@atozasai.com`,
+    name: 'E2E Tester',
+    emailVerified: true,
+  });
+
+  cookies = [
+    `${tokens.COOKIE_NAMES.access}=${tokens.signAccessToken(user)}`,
+    `${tokens.COOKIE_NAMES.refresh}=${tokens.signRefreshToken(user)}`,
+  ].join('; ');
   assert.ok(cookies.length > 0, 'expected auth cookies');
 });
 

@@ -1,5 +1,5 @@
 /**
- * SSE client for pre-login Public / Private chat.
+ * SSE client for the pre-login shared public chat.
  * Mirrors the authenticated stream protocol but hits /api/v1/public/* only.
  */
 
@@ -64,11 +64,6 @@ function createStreamer(startUrl, cancelUrlForJob) {
 
 export const streamPublicChat = createStreamer(
   `${BASE}/room/stream`,
-  (jobId) => `${BASE}/stream/${jobId}/cancel`,
-);
-
-export const streamEphemeralChat = createStreamer(
-  `${BASE}/ephemeral/stream`,
   (jobId) => `${BASE}/stream/${jobId}/cancel`,
 );
 

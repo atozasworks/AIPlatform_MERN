@@ -18,14 +18,21 @@ export const useAuth = create((set) => ({
     }
   },
 
-  async login(email, password) {
-    const { user } = await api.post('/auth/login', { email, password });
+  /** Request a one-time login code by email. */
+  async requestOtp(email) {
+    return api.post('/auth/otp/request', { email });
+  },
+
+  /** Verify an emailed code and establish a session. */
+  async verifyOtp(email, code) {
+    const { user } = await api.post('/auth/otp/verify', { email, code });
     set({ user, status: 'authenticated' });
     return user;
   },
 
-  async register(name, email, password) {
-    const { user } = await api.post('/auth/register', { name, email, password });
+  /** Exchange a Google ID token (credential) for a session. */
+  async loginWithGoogle(credential) {
+    const { user } = await api.post('/auth/google', { credential });
     set({ user, status: 'authenticated' });
     return user;
   },

@@ -89,7 +89,8 @@ export default function PublicComposer() {
         )}
       </div>
       <p className="mx-auto mt-2 max-w-3xl text-center text-xs text-slate-400">
-        Chat without an account. Sign in anytime to save private conversations to your profile.
+        This is a public chat visible to everyone. Sign in anytime to start your own private
+        conversations.
       </p>
     </div>
   );

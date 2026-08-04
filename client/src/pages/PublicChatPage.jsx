@@ -1,14 +1,12 @@
 import { useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import ThemeToggle from '../components/ui/ThemeToggle.jsx';
-import ModeToggle from '../components/public/ModeToggle.jsx';
 import PublicComposer from '../components/public/PublicComposer.jsx';
 import PublicMessageBubble from '../components/public/PublicMessageBubble.jsx';
 import Spinner from '../components/ui/Spinner.jsx';
-import { MODE, usePublicChat } from '../store/publicChat.js';
+import { usePublicChat } from '../store/publicChat.js';
 
 export default function PublicChatPage() {
-  const mode = usePublicChat((s) => s.mode);
   const messages = usePublicChat((s) => s.messages);
   const loadingHistory = usePublicChat((s) => s.loadingHistory);
   const historyError = usePublicChat((s) => s.historyError);
@@ -21,8 +19,8 @@ export default function PublicChatPage() {
 
   useEffect(() => {
     loadModels();
-    if (mode === MODE.PUBLIC) loadPublicHistory();
-  }, [loadModels, loadPublicHistory, mode]);
+    loadPublicHistory();
+  }, [loadModels, loadPublicHistory]);
 
   const onScroll = () => {
     const el = containerRef.current;
@@ -52,39 +50,27 @@ export default function PublicChatPage() {
           />
           <div>
             <p className="text-sm font-semibold tracking-tight">AtozAS AI</p>
-            <p className="text-xs text-slate-500">
-              {mode === MODE.PUBLIC ? 'Public chat — visible to everyone' : 'Private chat — not saved'}
-            </p>
+            <p className="text-xs text-slate-500">Public chat — visible to everyone</p>
           </div>
-        </div>
-
-        <div className="mx-auto">
-          <ModeToggle />
         </div>
 
         <div className="ml-auto flex items-center gap-2">
           <ThemeToggle />
           <Link
             to="/login"
-            className="rounded-lg px-3 py-1.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-          >
-            Sign in
-          </Link>
-          <Link
-            to="/register"
             className="rounded-lg bg-gradient-to-r from-blue-600 to-violet-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition hover:from-blue-700 hover:to-violet-700"
           >
-            Create account
+            Sign in
           </Link>
         </div>
       </header>
 
       <main className="relative z-10 flex min-h-0 flex-1 flex-col">
-        {mode === MODE.PUBLIC && loadingHistory ? (
+        {loadingHistory ? (
           <div className="flex flex-1 items-center justify-center">
             <Spinner size={28} />
           </div>
-        ) : historyError && mode === MODE.PUBLIC && messages.length === 0 ? (
+        ) : historyError && messages.length === 0 ? (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 text-center">
             <p className="text-sm text-red-600 dark:text-red-400">{historyError}</p>
             <button
@@ -96,7 +82,7 @@ export default function PublicChatPage() {
             </button>
           </div>
         ) : messages.length === 0 ? (
-          <EmptyGuestState mode={mode} />
+          <EmptyGuestState />
         ) : (
           <div ref={containerRef} onScroll={onScroll} className="flex-1 overflow-y-auto">
             <div className="mx-auto max-w-3xl space-y-6 px-4 py-6">
@@ -114,7 +100,7 @@ export default function PublicChatPage() {
   );
 }
 
-function EmptyGuestState({ mode }) {
+function EmptyGuestState() {
   return (
     <div className="flex flex-1 items-center justify-center overflow-y-auto px-4 py-8">
       <div className="w-full max-w-3xl text-center">
@@ -129,14 +115,10 @@ function EmptyGuestState({ mode }) {
           </span>
         </h1>
         <p className="mt-3 text-lg font-medium text-slate-600 dark:text-slate-300">
-          {mode === MODE.PUBLIC
-            ? 'Join the public conversation — no login required.'
-            : 'Private mode: this chat stays in your browser only.'}
+          Join the public conversation — no login required.
         </p>
         <p className="mt-1 text-sm text-slate-400">
-          {mode === MODE.PUBLIC
-            ? 'Messages you send here are visible to everyone using public chat.'
-            : 'Close or refresh the page and this conversation is gone forever.'}
+          Messages you send here are visible to everyone using public chat.
         </p>
       </div>
     </div>
