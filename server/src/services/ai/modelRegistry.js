@@ -9,14 +9,22 @@ import { env } from '../../config/env.js';
  * `deploy/scripts/fetch-models.sh` verifies the checksums at download time.
  *
  * `transmitsDataExternally` is false for every entry by design: all weights run
- * inside `llama-server` bound to loopback on the ATOZAS VPS.
+ * inside `llama-server` bound to loopback on the ATOZAS VPS. Live web retrieval
+ * (`services/web/`) does make outbound requests, but it never sends a prompt or
+ * a document to a model it does not control — see deploy/MODELS.md.
+ *
+ * ATOZAS serves exactly one chat model. There is no model picker: a second
+ * resident model would double RAM on a CPU box for no accuracy gain, and every
+ * per-model quirk (chat templates, thinking switches, prompt rewriting) is a
+ * source of silent behaviour drift. Adding one back means adding an entry here
+ * and restoring the picker in the client.
  */
 
 /**
  * @typedef {object} ModelRuntime
  * @property {number} contextWindow    Tokens the prompt budget may use.
  * @property {object} [extraBody]      Fields merged into every request payload.
- * @property {string} label            Short display name for the model picker.
+ * @property {string} label            Short display name shown in the UI.
  * @property {string} blurb            One-line "what is this good at" hint.
  */
 
@@ -38,10 +46,11 @@ import { env } from '../../config/env.js';
  */
 
 /**
- * Context budget per chat model. Every model here is natively 128k-capable
- * except Qwen3's 32k, but the ceiling that matters is RAM: the KV cache is
- * allocated up front per slot, so the router's per-model `ctx-size` in
- * deploy/llama/models.ini is what this must agree with.
+ * Context budget for the chat model. Qwen3-4B is natively 32k-capable, but the
+ * ceiling that matters is RAM: the KV cache is allocated up front per slot, so
+ * the router's `ctx-size` in deploy/llama/models.ini is what this must agree
+ * with. Live web retrieval spends a large share of this on source text, which
+ * is why MAX_RETRIEVAL_CONTEXT_TOKENS is budgeted separately.
  */
 const CHAT_CONTEXT_WINDOW = 8192;
 
@@ -67,93 +76,7 @@ export const MODEL_REGISTRY = [
       // No extraBody: this revision dropped the hybrid thinking mode, so
       // enable_thinking is not a template argument it accepts.
       label: 'Qwen3 4B Instruct 2507',
-      blurb: 'Newest here. Broadest recent knowledge; best general default.',
-    },
-  },
-  {
-    id: 'qwen3-4b-instruct',
-    name: 'Qwen3-4B (GGUF, Q4_K_M quantization)',
-    // Official Qwen release. Qwen3-4B is instruction-tuned with a switchable
-    // reasoning mode; ATOZAS runs it with thinking disabled.
-    repository: 'https://huggingface.co/Qwen/Qwen3-4B-GGUF',
-    license: 'Apache-2.0',
-    commercialUse: true,
-    file: 'Qwen3-4B-Q4_K_M.gguf',
-    // Verified by deploy/scripts/fetch-models.sh against MODEL_SHA256_QWEN3_4B.
-    sha256: process.env.MODEL_SHA256_QWEN3_4B || '',
-    transmitsDataExternally: false,
-    role: 'chat',
-    runtime: {
-      contextWindow: CHAT_CONTEXT_WINDOW,
-      // Qwen3 exposes reasoning as a template flag; CPU deployments keep it off.
-      extraBody: { chat_template_kwargs: { enable_thinking: false } },
-      label: 'Qwen3 4B',
-      blurb: 'Original Qwen3 release. Strongest multilingual coverage here.',
-    },
-  },
-  {
-    id: 'phi-4-mini-instruct',
-    name: 'Phi-4-mini-instruct 3.8B (GGUF, Q4_K_M quantization)',
-    repository: 'https://huggingface.co/microsoft/Phi-4-mini-instruct',
-    ggufRepository: 'https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF',
-    license: 'MIT',
-    commercialUse: true,
-    file: 'Phi-4-mini-instruct-Q4_K_M.gguf',
-    sha256: process.env.MODEL_SHA256_PHI4_MINI || '',
-    transmitsDataExternally: false,
-    role: 'chat',
-    runtime: {
-      contextWindow: CHAT_CONTEXT_WINDOW,
-      label: 'Phi-4 mini 3.8B',
-      blurb: 'Microsoft reasoning-tuned small model. Good at maths and logic.',
-    },
-  },
-  {
-    id: 'gemma-3-4b-it',
-    name: 'Gemma 3 4B Instruct (GGUF, Q4_K_M quantization)',
-    repository: 'https://huggingface.co/google/gemma-3-4b-it',
-    ggufRepository: 'https://huggingface.co/unsloth/gemma-3-4b-it-GGUF',
-    license: 'Gemma Terms of Use',
-    // Permitted, but not an OSI licence: Google's Prohibited Use Policy binds
-    // downstream users and must travel with any redistribution of the weights.
-    commercialUse: true,
-    licenseNotes:
-      'Gemma Terms of Use + Prohibited Use Policy apply. Redistribution must carry the terms ' +
-      'and state that the weights are modified if they have been.',
-    file: 'gemma-3-4b-it-Q4_K_M.gguf',
-    sha256: process.env.MODEL_SHA256_GEMMA3_4B || '',
-    transmitsDataExternally: false,
-    role: 'chat',
-    runtime: {
-      contextWindow: CHAT_CONTEXT_WINDOW,
-      // Gemma 3's own template has no system turn, but llama.cpp's jinja
-      // rendering folds a system message into the first user turn rather than
-      // dropping it. Verified against this GGUF: the system prompt reaches the
-      // model, so no application-side rewriting is needed.
-      label: 'Gemma 3 4B',
-      blurb: 'Google instruction model. Strong at summarising and rewriting.',
-    },
-  },
-  {
-    id: 'llama-3.2-3b-instruct',
-    name: 'Llama 3.2 3B Instruct (GGUF, Q4_K_M quantization)',
-    repository: 'https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct',
-    ggufRepository: 'https://huggingface.co/unsloth/Llama-3.2-3B-Instruct-GGUF',
-    license: 'Llama 3.2 Community License',
-    // Commercial use is permitted below Meta's 700M monthly-active-user
-    // threshold; above it a separate licence from Meta is required.
-    commercialUse: true,
-    licenseNotes:
-      'Llama 3.2 Community License. Requires a "Built with Llama" notice and the ' +
-      'Acceptable Use Policy; a separate Meta licence is needed above 700M MAU.',
-    file: 'Llama-3.2-3B-Instruct-Q4_K_M.gguf',
-    sha256: process.env.MODEL_SHA256_LLAMA32_3B || '',
-    transmitsDataExternally: false,
-    role: 'chat',
-    runtime: {
-      contextWindow: CHAT_CONTEXT_WINDOW,
-      label: 'Llama 3.2 3B',
-      blurb: 'Smallest and fastest here. Best when latency matters most.',
+      blurb: 'Recent built-in knowledge, extended by live retrieval.',
     },
   },
   {
@@ -179,10 +102,8 @@ export function getModelRecord(id) {
 /**
  * Direct download URL for a record's GGUF.
  *
- * `ggufRepository` wins when present: for Qwen3-4B-Instruct-2507, Phi-4,
- * Gemma 3 and Llama 3.2 the original repository holds safetensors (and for the
- * last two is licence-gated), while the GGUF conversion lives in a separate,
- * ungated repository.
+ * `ggufRepository` wins when present: Qwen publishes safetensors for the 2507
+ * revision but no GGUF, so the conversion lives in a separate repository.
  */
 export function getModelDownloadUrl(record) {
   const repo = (record.ggufRepository || record.repository).replace(
@@ -192,7 +113,12 @@ export function getModelDownloadUrl(record) {
   return `https://huggingface.co/${repo}/resolve/main/${record.file}?download=true`;
 }
 
-/** Chat models in registry order; the first is the fallback default. */
+/**
+ * Chat models in registry order. This is a one-element list by design; it stays
+ * a list because the provider, the router preset generator and the fetch
+ * scripts all iterate it, and collapsing it to a scalar would spread the
+ * single-model assumption across four files instead of documenting it here.
+ */
 export function listChatModelIds() {
   return MODEL_REGISTRY.filter((m) => m.role === 'chat').map((m) => m.id);
 }

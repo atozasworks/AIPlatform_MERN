@@ -4,9 +4,10 @@ import { readinessReport } from '../services/health/probes.js';
 import { getMetricsSnapshot, getSystemMetrics } from '../services/health/metrics.js';
 import { describeModelCompliance } from '../services/ai/modelRegistry.js';
 import { getCacheStats } from '../services/rag/vectorStore.js';
+import { checkSearchHealth } from '../services/web/searxng.js';
 import { pauseQueue, resumeQueue, cleanStaleJobs } from '../services/queue/llmQueue.js';
 import { aiGateway } from '../services/ai/AIGateway.js';
-import { env } from '../config/env.js';
+import { env, isSelfHostedUrl } from '../config/env.js';
 
 /**
  * Administrative visibility into the inference platform.
@@ -69,9 +70,37 @@ export const aiStatus = asyncHandler(async (_req, res) => {
     },
 
     /**
+     * Live web retrieval — the only outbound path in the system, so its
+     * configuration is reported in full for audit rather than summarised.
+     *
+     * `searxngSelfHosted` should always be true: env.js refuses to boot
+     * otherwise. It is asserted again here so the status page proves it instead
+     * of assuming it.
+     */
+    webRetrieval: {
+      enabled: env.web.enabled,
+      search: await checkSearchHealth(),
+      searxngUrl: env.web.searxngUrl || null,
+      searxngSelfHosted: env.web.searxngUrl ? isSelfHostedUrl(env.web.searxngUrl) : null,
+      allowedDomains: env.web.allowedDomains,
+      blockedDomains: env.web.blockedDomains,
+      // An empty allowlist means any public host is quotable. Surfaced as an
+      // explicit flag because it is the riskier of the two postures.
+      unrestrictedDomains: env.web.enabled && env.web.allowedDomains.length === 0,
+      maxResults: env.web.maxResults,
+      maxFetch: env.web.maxFetch,
+      topPassages: env.web.topPassages,
+      minScore: env.web.minScore,
+      totalBudgetMs: env.web.totalBudgetMs,
+      userAgent: env.web.userAgent,
+    },
+
+    /**
      * Compliance record. `transmitsDataExternally` is false for every entry and
-     * base URLs are asserted self-hosted at boot, so this is the auditable
-     * statement that no prompt leaves ATOZAS infrastructure.
+     * model base URLs are asserted self-hosted at boot, so this remains the
+     * auditable statement that no prompt reaches a third-party model. Note that
+     * `webRetrieval` above is a separate egress path: it sends search queries
+     * out, never prompts or documents.
      */
     models: describeModelCompliance(),
 

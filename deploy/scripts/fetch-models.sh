@@ -38,9 +38,11 @@ command -v curl >/dev/null || die "curl is required."
 command -v sha256sum >/dev/null || die "sha256sum is required."
 command -v node >/dev/null || die "node is required (the catalogue comes from the model registry)."
 
-# ── Disk space guard: five Q4 chat models plus embeddings is roughly 13 GB ──
+# ── Disk space guard ──
+# One Q4_K_M 4B chat model (~2.4 GB) plus the Q8_0 embedding model (~0.6 GB).
+# The threshold leaves headroom for the .part files a resumed download uses.
 AVAIL_KB=$(df -Pk "${MODEL_ROOT%/*}" | awk 'NR==2 {print $4}')
-(( AVAIL_KB > 15 * 1024 * 1024 )) || die "Less than 15 GB free on the model volume."
+(( AVAIL_KB > 6 * 1024 * 1024 )) || die "Less than 6 GB free on the model volume."
 
 fetch() {
   local name="$1" url="$2" dir="$3" file="$4" expected="$5" license="$6"
@@ -107,9 +109,9 @@ $(log 'Models ready')
   Embedding:    ${EMBED_DIR}
   Router preset: ${REPO_ROOT}/deploy/llama/models.ini
 
-Every model runs entirely on this host. No data is transmitted externally.
-Licence obligations per model are recorded in deploy/MODELS.md - Gemma 3 and
-Llama 3.2 carry use restrictions that Apache-2.0 and MIT do not.
+Every model runs entirely on this host. No prompt, conversation or document is
+transmitted externally. Licences and the exact egress boundary - including what
+live web retrieval does and does not send - are recorded in deploy/MODELS.md.
 
 Start the services:
   sudo systemctl enable --now atozas-llama atozas-llama-embed

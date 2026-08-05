@@ -18,10 +18,13 @@ export default function MessageBubble({ message }) {
   const editMessage = useChat((s) => s.editMessage);
   const selectVersion = useChat((s) => s.selectVersion);
   const markMessagePrivate = useChat((s) => s.markMessagePrivate);
-  // Falls back to the raw id for models no longer in the catalogue, so old
-  // messages keep attributing their answer to something.
-  const modelLabel = useChat(
-    (s) => s.models.find((m) => m.id === message.model)?.label || message.model,
+  // Only the currently served model has a friendly label. Messages generated
+  // before a model change keep their raw id so an old answer is never
+  // misattributed to the model running now.
+  const modelLabel = useChat((s) =>
+    message.model && message.model === s.selectedModel
+      ? s.modelLabel || message.model
+      : message.model,
   );
 
   // An optimistic row has no server id yet, so it can be neither edited nor

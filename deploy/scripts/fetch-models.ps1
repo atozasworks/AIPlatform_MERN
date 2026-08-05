@@ -11,12 +11,12 @@
   renamed once complete, so an interrupted run can never leave a truncated GGUF
   that llama-server would later fail to load in a confusing way.
 
-  Licences differ per model and are printed before each download:
-    Qwen3-4B-2507     Apache-2.0
-    Qwen3-4B          Apache-2.0
-    Phi-4-mini        MIT
-    Gemma 3 4B        Gemma Terms of Use (+ Prohibited Use Policy)
-    Llama 3.2 3B      Llama 3.2 Community License (+ "Built with Llama" notice)
+  Both current models are Apache-2.0, with no downstream use restrictions:
+    Qwen3-4B-Instruct-2507   Apache-2.0   chat        ~2.4 GB
+    Qwen3-Embedding-0.6B     Apache-2.0   embedding   ~0.6 GB
+
+  The licence is still printed before each download, because that check must not
+  depend on today's registry happening to be free of conditioned licences.
 
 .PARAMETER Only
   Download just these model ids. Default: everything in the registry.
@@ -26,7 +26,7 @@
 
 .EXAMPLE
   .\deploy\scripts\fetch-models.ps1
-  .\deploy\scripts\fetch-models.ps1 -Only gemma-3-4b-it,llama-3.2-3b-instruct
+  .\deploy\scripts\fetch-models.ps1 -Only qwen3-4b-instruct-2507
   .\deploy\scripts\fetch-models.ps1 -Role chat
 #>
 [CmdletBinding()]
@@ -71,7 +71,7 @@ $drive = Get-PSDrive -Name (Split-Path -Qualifier $ModelDir).TrimEnd(':')
 $freeGB = [Math]::Round($drive.Free / 1GB, 1)
 Write-Host "    target:    $ModelDir"
 Write-Host "    free disk: $freeGB GB"
-if ($freeGB -lt 13) { Write-Warn "Less than 13 GB free; the full set needs roughly 13 GB." }
+if ($freeGB -lt 6) { Write-Warn "Less than 6 GB free; the full set needs roughly 3 GB plus room for .part files." }
 
 $downloaded = 0
 foreach ($model in $manifest) {

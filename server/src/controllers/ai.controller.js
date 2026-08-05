@@ -33,9 +33,28 @@ import { logger } from '../config/logger.js';
  * an idle relay costs a socket, not a CPU core.
  */
 
-/** GET /ai/models — engine catalog for the selector. */
+/**
+ * GET /ai/models — the served model, plus whether live retrieval is available.
+ *
+ * Still a list: the provider layer is list-shaped and the client picks the
+ * default. ATOZAS serves one chat model, so there is nothing to choose between.
+ *
+ * `webRetrieval` is reported here rather than on a separate endpoint because the
+ * client needs it at the same moment, and because it changes how much a user
+ * should trust a time-sensitive answer — with retrieval unavailable, answers come
+ * from training data alone.
+ */
 export const listModels = asyncHandler(async (_req, res) =>
-  sendSuccess(res, { models: await aiGateway.listModels(), default: env.ai.llamacpp.defaultModel }),
+  sendSuccess(res, {
+    models: await aiGateway.listModels(),
+    default: env.ai.llamacpp.defaultModel,
+    webRetrieval: {
+      available: env.web.enabled && Boolean(env.web.searxngUrl),
+      // Absent an allowlist retrieval may quote any public host; with one it is
+      // pinned to sources the operator vetted.
+      restrictedToAllowlist: env.web.allowedDomains.length > 0,
+    },
+  }),
 );
 
 /** GET /ai/profiles — prompt profiles the client may choose from. */

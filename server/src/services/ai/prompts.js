@@ -60,9 +60,31 @@ export const PROMPT_PROFILES = {
     maxOutputTokens: null,
     retrieval: true,
     requireRetrieval: true,
+    // Deliberately no web: this profile's contract is "only ATOZAS's own
+    // indexed material", and quietly widening that to the open internet would
+    // break the guarantee the operator selected it for.
+    web: false,
     instructions:
       'Answer only from the provided sources. Cite each supporting source inline as [S1], [S2] using the identifiers given. ' +
       'If the sources do not contain the answer, say so plainly and do not fall back on general knowledge.',
+  },
+
+  current: {
+    id: 'current',
+    label: 'Current (live web)',
+    description: 'Always searches the web first. For news, prices and today’s facts.',
+    sampling: { temperature: 0.15, topP: 0.9, repeatPenalty: 1.05 },
+    maxOutputTokens: null,
+    retrieval: true,
+    web: true,
+    // Skips the freshness router. The user picking this profile *is* the signal
+    // that the question needs current information, and it is a better signal
+    // than any keyword heuristic.
+    forceWeb: true,
+    instructions:
+      'Answer from the live sources supplied, citing each one inline as [S1], [S2]. State the date each fact refers to, ' +
+      'and name the publisher when the claim is contested or attributed. If the sources do not answer the question, ' +
+      'say what they do establish and what remains unverified rather than filling the gap from memory.',
   },
 
   coding: {
@@ -84,6 +106,9 @@ export const PROMPT_PROFILES = {
     sampling: { temperature: 0.2, topP: 0.9, repeatPenalty: 1.15 },
     maxOutputTokens: null,
     retrieval: true,
+    // No web, or the profile contradicts itself: fetched articles would arrive in
+    // the prompt as sources for a task whose one rule is to add no new claims.
+    web: false,
     instructions:
       'Summarize only what the supplied text states. Introduce no facts, figures or conclusions that are not present in the source. Preserve the original language of the text.',
   },
@@ -130,14 +155,32 @@ export function resolveProfile(id, overrides = {}) {
     instructions: profile.instructions,
     retrieval: profile.retrieval !== false,
     requireRetrieval: Boolean(profile.requireRetrieval),
+    /**
+     * Whether the live web tier may run. Defaults to on wherever retrieval is
+     * on, because the common case — a user asking a time-sensitive question in
+     * the default profile — is exactly the one that needs it. Profiles opt out
+     * explicitly (`web: false`), and the freshness router still decides per
+     * question, so "allowed" is not "always".
+     */
+    web: profile.web ?? profile.retrieval !== false,
+    forceWeb: Boolean(profile.forceWeb),
     maxTokens,
     sampling: { ...profile.sampling },
   };
 }
 
-/** Catalog for the client-side profile selector. */
+/**
+ * Catalog for the client-side profile selector.
+ *
+ * Profiles whose entire purpose is live retrieval are withheld when the web tier
+ * is disabled. Offering "Current (live web) — always searches the web first" on a
+ * deployment that cannot search would promise freshness it can only answer from
+ * training data, which is the specific failure this tier exists to prevent. The
+ * profile still resolves if requested directly, degrading to a plain grounded
+ * answer with the staleness caveat.
+ */
 export function listProfiles() {
-  return PROFILE_IDS.map((id) => {
+  return PROFILE_IDS.filter((id) => env.web.enabled || !PROMPT_PROFILES[id].forceWeb).map((id) => {
     const p = PROMPT_PROFILES[id];
     return {
       id: p.id,
@@ -145,6 +188,9 @@ export function listProfiles() {
       description: p.description,
       maxOutputTokens: resolveProfile(p.id).maxTokens,
       usesRetrieval: p.retrieval !== false,
+      // Lets the client mark which profiles can reach the internet, so the
+      // choice is informed rather than implicit.
+      usesWeb: resolveProfile(p.id).web && env.web.enabled,
     };
   });
 }

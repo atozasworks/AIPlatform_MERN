@@ -24,6 +24,10 @@ export const METRIC = {
   REQUESTS_RATE_LIMITED: 'requests_rate_limited',
   REQUESTS_QUEUE_FULL: 'requests_queue_full',
   RETRIEVALS: 'retrievals',
+  // Live web tier, counted separately from local document retrieval: it is the
+  // only path that leaves the host, so its volume is an auditable figure.
+  WEB_RETRIEVALS: 'web_retrievals',
+  WEB_RETRIEVALS_EMPTY: 'web_retrievals_empty',
 };
 
 export async function increment(name, by = 1) {
@@ -47,6 +51,9 @@ export const SAMPLE = {
   TOKENS_PER_SECOND: 'tokens_per_second',
   TOTAL_COMPLETION_MS: 'total_completion_ms',
   RETRIEVAL_MS: 'retrieval_ms',
+  // Search plus page fetches plus reranking. Tracked apart from RETRIEVAL_MS
+  // because it is network-bound and orders of magnitude slower.
+  WEB_RETRIEVAL_MS: 'web_retrieval_ms',
 };
 
 function percentile(sorted, p) {

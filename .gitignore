@@ -8,6 +8,8 @@ node_modules/
 .env.*
 !.env.example
 *.pem
+# SearXNG instance secret, generated per machine by deploy/searxng/run-local.sh
+deploy/searxng/.secret
 *.key
 
 # Build output

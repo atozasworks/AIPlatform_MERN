@@ -67,6 +67,13 @@ export function isSelfHostedUrl(rawUrl) {
 /**
  * Fails startup when an inference endpoint points outside ATOZAS infrastructure.
  * This is the hard guarantee behind "no third-party LLM API".
+ *
+ * Scope note: this guards *model* traffic — prompts, documents and embeddings.
+ * Live web retrieval (`services/web/`) deliberately makes outbound requests and
+ * is governed by the separate `env.web` block below. The two are kept apart on
+ * purpose: retrieval fetching a public news page is a different risk from a
+ * prompt leaving the box, and collapsing them into one switch would make it
+ * impossible to audit either.
  */
 export function assertSelfHosted(label, rawUrl) {
   if (!isSelfHostedUrl(rawUrl)) {
@@ -87,6 +94,7 @@ const embeddingBaseUrl = (process.env.EMBEDDING_BASE_URL || 'http://127.0.0.1:80
   '',
 );
 const gpuBaseUrl = (process.env.GPU_BASE_URL || '').replace(/\/+$/, '');
+const searxngBaseUrl = (process.env.SEARXNG_BASE_URL || '').replace(/\/+$/, '');
 
 export const env = {
   nodeEnv: NODE_ENV,
@@ -272,6 +280,118 @@ export const env = {
     maxDocumentsPerUser: num(process.env.RAG_MAX_DOCUMENTS_PER_USER, 200),
   },
 
+  /**
+   * Live web retrieval — the only component in ATOZAS that talks to the public
+   * internet.
+   *
+   * Why it exists: a 4B model's weights are frozen at its training cutoff, so
+   * "what is the current version of X" or "what happened today" cannot be
+   * answered honestly from the model alone. Retrieval supplies dated, cited
+   * source text and the model summarises it.
+   *
+   * What it does NOT do: no prompt, conversation or uploaded document is ever
+   * sent outward. Only a short search query derived from the user's question
+   * reaches SearXNG (self-hosted), and only public URLs are fetched. The model
+   * itself stays on loopback under `assertSelfHosted()`.
+   *
+   * Disabled by default. A deployment that must keep zero egress simply leaves
+   * WEB_RETRIEVAL_ENABLED unset and behaves exactly as it did before.
+   */
+  web: {
+    enabled: bool(process.env.WEB_RETRIEVAL_ENABLED, false),
+
+    /**
+     * Self-hosted SearXNG instance (open-source metasearch). Required: there is
+     * deliberately no fallback to a commercial search API, because that would
+     * put the user's question in a third party's logs.
+     */
+    searxngUrl: searxngBaseUrl,
+    searxngEngines: list(process.env.SEARXNG_ENGINES),
+    // SearXNG's own categories; 'general' plus 'news' covers current events.
+    searxngCategories: list(process.env.SEARXNG_CATEGORIES).length
+      ? list(process.env.SEARXNG_CATEGORIES)
+      : ['general'],
+    searxngLanguage: process.env.SEARXNG_LANGUAGE || 'en',
+    searxngTimeoutMs: num(process.env.SEARXNG_TIMEOUT_MS, 8000),
+
+    /** How many search hits to consider, and how many of those to actually fetch. */
+    maxResults: num(process.env.WEB_MAX_RESULTS, 8),
+    maxFetch: num(process.env.WEB_MAX_FETCH, 4),
+    /** Passages handed to the model after reranking. */
+    topPassages: num(process.env.WEB_TOP_PASSAGES, 4),
+
+    /**
+     * How passages are scored against the question.
+     *
+     * 'lexical' (default) is BM25-style term overlap: microseconds, no inference.
+     * 'embedding' uses the local embedding server, which measured ~5.5 seconds
+     * per passage on the ATOZAS CPU box — more than the entire retrieval budget
+     * for even four passages. See services/web/rerank.js for the measurement.
+     * Only worth enabling on a GPU or dedicated embedding host.
+     */
+    rerankMode: process.env.WEB_RERANK_MODE === 'embedding' ? 'embedding' : 'lexical',
+
+    /**
+     * Ceiling on how many passages are scored. Effectively free under lexical
+     * scoring; under 'embedding' this is the knob that decides whether reranking
+     * fits in the budget at all.
+     */
+    maxRerankPassages: num(process.env.WEB_MAX_RERANK_PASSAGES, 40),
+
+    /**
+     * Per-page fetch limits. A CPU box cannot afford to stream a 40 MB page
+     * through an HTML parser, and a slow origin must not hold a generation slot.
+     */
+    fetchTimeoutMs: num(process.env.WEB_FETCH_TIMEOUT_MS, 6000),
+    maxPageBytes: num(process.env.WEB_MAX_PAGE_BYTES, 2 * 1024 * 1024),
+    /** Wall-clock ceiling for the whole retrieval phase, fetches included. */
+    totalBudgetMs: num(process.env.WEB_TOTAL_BUDGET_MS, 20000),
+
+    /**
+     * Empty allowlist means "any public host". Set it to pin retrieval to
+     * sources ATOZAS is willing to quote — official docs, gov sites, a chosen
+     * news set — which is the recommended production posture.
+     */
+    allowedDomains: list(process.env.WEB_ALLOWED_DOMAINS),
+    blockedDomains: list(process.env.WEB_BLOCKED_DOMAINS),
+
+    /** Identifies ATOZAS to origin servers; some sites block blank agents. */
+    userAgent:
+      process.env.WEB_USER_AGENT ||
+      'ATOZAS-AI/1.0 (+https://atozasai.com; self-hosted retrieval bot)',
+
+    /** Redis TTLs. Repeated questions must not re-hit the same origins. */
+    searchCacheTtlSeconds: num(process.env.WEB_SEARCH_CACHE_TTL_SECONDS, 900),
+    pageCacheTtlSeconds: num(process.env.WEB_PAGE_CACHE_TTL_SECONDS, 3600),
+
+    /**
+     * Minimum rerank score for a web passage to be quoted.
+     *
+     * The default has to depend on the rerank mode, because the two modes emit
+     * scores on unrelated scales and a single number cannot serve both. Embedding
+     * mode yields cosine similarity, where 0.45 is a weak-but-real match. Lexical
+     * mode yields IDF-weighted query coverage, which tops out well below 1 once
+     * term-frequency saturation and length normalization are applied.
+     *
+     * The lexical default was measured, not guessed. Scoring 49 passages from two
+     * real fetched pages:
+     *
+     *   | question the pages answer     | best passages 0.20 - 0.67 |
+     *   | question they do not          | best passages 0.06 - 0.07 |
+     *
+     * 0.15 sits in the gap with roughly a 2x margin either side. Reusing 0.45
+     * here rejected every passage, including correct ones, which is the failure
+     * this split prevents.
+     *
+     * Independent of RAG_MIN_SCORE in either mode: web text is noisier than
+     * curated uploads, and search already applied its own relevance filter.
+     */
+    minScore: Number(
+      process.env.WEB_MIN_SCORE ??
+        (process.env.WEB_RERANK_MODE === 'embedding' ? 0.45 : 0.15),
+    ),
+  },
+
   rateLimit: {
     windowMs: num(process.env.RATE_LIMIT_WINDOW_MS, 60000),
     max: num(process.env.RATE_LIMIT_MAX, 120),
@@ -281,9 +401,26 @@ export const env = {
   jsonBodyLimit: process.env.JSON_BODY_LIMIT || '1mb',
 };
 
-// Boot-time egress guarantee. Runs on the API process and the worker process.
+// Boot-time egress guarantee for model traffic. Runs on the API process and the
+// worker process. Web retrieval is intentionally not covered here; see env.web.
 if (env.ai.llamacpp.enabled) assertSelfHosted('LLAMACPP_BASE_URL', env.ai.llamacpp.baseUrl);
 if (env.ai.embeddings.enabled) assertSelfHosted('EMBEDDING_BASE_URL', env.ai.embeddings.baseUrl);
 if (env.ai.gpu.enabled) assertSelfHosted('GPU_BASE_URL', env.ai.gpu.baseUrl);
+
+/**
+ * SearXNG is a search *aggregator*, not a model endpoint, but it still sees the
+ * user's query, so it is held to the same self-hosting rule. Pointing this at a
+ * public SearXNG instance would hand every question to a third party — the
+ * exact leak the rest of this file exists to prevent.
+ */
+if (env.web.enabled) {
+  if (!env.web.searxngUrl) {
+    throw new Error(
+      'WEB_RETRIEVAL_ENABLED=true requires SEARXNG_BASE_URL. Run the bundled ' +
+        'self-hosted SearXNG (deploy/searxng/) — a public instance would leak user queries.',
+    );
+  }
+  assertSelfHosted('SEARXNG_BASE_URL', env.web.searxngUrl);
+}
 
 export default env;

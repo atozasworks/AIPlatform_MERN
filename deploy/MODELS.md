@@ -11,51 +11,79 @@ file is the human-readable record; the machine-readable copy lives in
 |---|---|
 | All weights self-hosted on ATOZAS infrastructure | Yes |
 | Any third-party LLM / embedding / reranking API in use | No |
-| Any prompt, document or embedding transmitted externally | No |
-| All models permit commercial use | Yes — but two carry conditions, see below |
+| Any prompt, conversation or uploaded document transmitted externally | No |
+| Any outbound network traffic at all | Yes, when live web retrieval is enabled — see below |
+| All models permit commercial use | Yes, unconditionally (Apache-2.0) |
 
-Two of the five chat models are **not** under a permissive OSI licence, and the
-difference is operational, not academic:
+ATOZAS serves **one** chat model, `Qwen3-4B-Instruct-2507`, plus one embedding
+model. Both are Apache-2.0, so there are no redistribution conditions, no
+acceptable-use policy binding downstream users, and no user-count threshold to
+watch. The Gemma 3, Llama 3.2 and Phi-4-mini entries that previously appeared
+here were removed along with the model picker; if any is ever reinstated, its
+licence conditions must be re-recorded in this file first.
 
-- **Gemma 3 4B** — Gemma Terms of Use. Commercial use is permitted, but Google's
-  Prohibited Use Policy binds ATOZAS *and* anyone ATOZAS distributes the weights
-  to, and the terms must travel with any redistribution.
-- **Llama 3.2 3B** — Llama 3.2 Community License. Commercial use is permitted
-  only below 700 million monthly active users; above that Meta requires a
-  separate licence. Products built on it must carry a "Built with Llama" notice.
+### What is guaranteed, and what is not
 
-Both Qwen3-4B builds (Apache-2.0) and Phi-4-mini (MIT) have no such conditions.
-If ATOZAS ever needs to ship weights to a customer or cross the MAU threshold,
-the two conditioned models are the ones to re-examine.
+Two separate properties are at stake, and conflating them would misrepresent the
+system. They are enforced by different code and configured independently.
 
-The no-external-egress property is enforced in code, not by convention:
-`assertSelfHosted()` in `server/src/config/env.js` runs at boot on both the API
-and worker processes and refuses to start if any inference URL resolves outside
-loopback, an RFC1918 private range, or an explicitly allowlisted host. The
-Groq, OpenAI, Anthropic, Gemini, Cohere, OpenRouter and Ollama providers have
-been deleted from the codebase entirely — there is no code path to reach them.
+**No prompt reaches a third-party model.** This is absolute and enforced at boot.
+`assertSelfHosted()` in `server/src/config/env.js` runs on both the API and the
+worker process and refuses to start if any inference or embedding URL resolves
+outside loopback, an RFC1918 private range, or an explicitly allowlisted host.
+The Groq, OpenAI, Anthropic, Gemini, Cohere, OpenRouter and Ollama providers were
+deleted from the codebase — there is no code path to reach them. Generation and
+embedding happen on this host, always.
 
-## Serving architecture — one router, five chat models
+**Live web retrieval does make outbound requests.** It is off by default
+(`WEB_RETRIEVAL_ENABLED=false`). When an operator enables it, two kinds of
+traffic leave the host:
+
+1. A short **search query** derived from the user's question, sent to a SearXNG
+   instance ATOZAS runs. `env.js` refuses to boot if `SEARXNG_BASE_URL` is not
+   loopback or private, so the query cannot be sent to a public instance. What
+   SearXNG then forwards to upstream engines is governed by
+   `deploy/searxng/settings.yml`.
+2. HTTP GETs to the **public pages** the search returned, to extract article text.
+
+What never leaves, in either case: the system prompt, the conversation history,
+the user's identity, and any uploaded document or its embeddings. The question is
+reduced to a search phrase; nothing else is transmitted.
+
+Auditing it: `GET /api/v1/admin/ai/status` reports the full `webRetrieval`
+configuration, including whether a domain allowlist is in force, and the
+`web_retrievals` counter records how many requests used the tier.
+
+`WEB_ALLOWED_DOMAINS` is the control that matters for a regulated deployment.
+Left empty, retrieval may quote any public host. Populated, it is an exclusive
+allowlist — official documentation, government sources, a chosen news set — which
+bounds what the model can end up citing.
+
+## Serving architecture — one router, one chat model
 
 `llama-server` runs in **router mode**: started without `--model`, it reads
-`deploy/llama/models.ini` and fronts every chat model on `127.0.0.1:8081`,
-spawning a child server per model on demand and evicting the least-recently-used
-one once `--models-max` are resident. The `model` field of each OpenAI-format
-request selects the target, which is how the model picker in the UI works
-without a redeploy.
+`deploy/llama/models.ini` and fronts the chat model on `127.0.0.1:8081`, spawning
+a child server on demand. Router mode is retained despite there being one model
+because it keeps `models.ini` generated from the registry and makes adding a
+second model a configuration change rather than a code change.
 
-`--models-max` defaults to **1**. That is a memory decision: each resident Q4 4B
-model costs roughly 2.5 GB of weights plus its KV cache, so keeping all five
-loaded would need ~13 GB that a 16 GB host does not have to spare alongside
-MongoDB, Redis and the Node processes. The cost of the default is that the first
-request after switching models pays a model load from disk.
+`--models-max` is **1**, which is now simply a statement of fact rather than a
+memory trade-off: one resident Q4 4B model costs roughly 2.5 GB of weights plus
+its KV cache, comfortably within a 16 GB host alongside MongoDB, Redis, SearXNG
+and the Node processes.
+
+There is **no model picker**. That is deliberate: a second resident model would
+double RAM for no accuracy gain on a CPU box, and every per-model quirk (chat
+templates, thinking switches, prompt rewriting) is a source of behaviour drift
+that is invisible until an answer is subtly wrong. The client shows the model as
+a label, not a control.
 
 `models.ini` is **generated**, never hand-edited:
 `server/scripts/generate-llama-preset.mjs` writes it from `modelRegistry.js`, so
-the ids the API resolves and the ids the router serves cannot drift apart. It
-skips models whose GGUF is not on disk, and the provider marks anything missing
-from the router's `/v1/models` as `weights-missing` so the picker greys it out
-instead of failing at generation time.
+the id the API resolves and the id the router serves cannot drift apart. It skips
+models whose GGUF is not on disk, and the provider marks anything missing from
+the router's `/v1/models` as `weights-missing` rather than failing at generation
+time.
 
 ---
 
@@ -77,13 +105,16 @@ instead of failing at generation time.
 | Transmits data externally | No — served by the router on `127.0.0.1:8081` |
 | Served by | `atozas-llama.service` |
 
-**Why this is the default** (`LLAMACPP_MODEL=qwen3-4b-instruct-2507`). It is the
-most recent chat model in the register, and its knowledge cutoff is later than
-the original Qwen3-4B below, Phi-4-mini and Llama 3.2. That matters for
-questions the retrieval layer does not cover: where no source is fetched, the
-answer comes from the weights alone. A host that has not downloaded this GGUF
-must point `LLAMACPP_MODEL` at a model it does have, or the default selection
-resolves to a model the router cannot serve.
+**Why this model** (`LLAMACPP_MODEL=qwen3-4b-instruct-2507`). It has the latest
+knowledge cutoff of the small open-weight models evaluated, and Apache-2.0
+imposes no conditions on commercial use or redistribution. The cutoff matters
+because it is the floor on answer quality: where retrieval fetches nothing, the
+answer comes from the weights alone.
+
+**The cutoff is still a cutoff.** No amount of choosing a newer model fixes
+staleness — it only moves the date. That is what the live retrieval tier below
+exists for, and why the system prompt states today's date and requires the model
+to flag anything it cannot confirm from a source.
 
 **Repository choice.** Qwen publishes safetensors for this revision, not GGUF.
 `Qwen/Qwen3-4B-Instruct-2507-GGUF` **does not exist** — Hugging Face answers a
@@ -98,123 +129,20 @@ instruct-only: Qwen split the hybrid model into separate Instruct and Thinking
 releases. It therefore takes no `enable_thinking` template argument, and its
 registry entry has no `extraBody`. `LLAMACPP_THINKING` has no effect on it.
 
----
+Independently of that, `server/src/utils/sanitizeText.js` filters `<think>`
+blocks out of the token stream, so hidden reasoning cannot reach a user even if a
+future model emits it.
 
-## 2. Chat model — Qwen3-4B (Q4_K_M GGUF)
-
-| Field | Value |
-|---|---|
-| Model name and version | Qwen3-4B (official GGUF release) |
-| Quantization | Q4_K_M (4-bit, k-quant medium) |
-| Source repository | https://huggingface.co/Qwen/Qwen3-4B-GGUF |
-| Publisher | Alibaba Cloud / Qwen team |
-| Licence | Apache-2.0 |
-| Commercial use permitted | Yes, without revenue restriction or usage reporting |
-| Attribution required | Retain the Apache-2.0 licence notice |
-| File on disk | `/opt/atozas-ai/models/chat/Qwen3-4B-Q4_K_M.gguf` |
-| Verified size | 2382 MB |
-| SHA-256 | `7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5` |
-| Transmits data externally | No — served by `llama-server` bound to `127.0.0.1:8081` |
-| Served by | `atozas-llama.service` |
-
-**Repository choice.** This is the Qwen team's own GGUF publication, which is
-why this entry has no separate `ggufRepository`. The 2507 revision above has
-one, because Qwen did not repeat the GGUF publication for it — see section 1.
-
-**Reasoning mode.** Qwen3 can emit chain-of-thought inside `<think>…</think>`.
-It is disabled by default (`LLAMACPP_THINKING=false`), which passes
-`chat_template_kwargs: { enable_thinking: false }` on every request. That is a
-CPU-cost decision: reasoning tokens can triple generation time for a marginal
-quality gain at this parameter count. Independently of the flag,
-`server/src/utils/sanitizeText.js` filters `<think>` blocks out of the token
-stream, so hidden reasoning can never reach a user even if the model emits it.
+**Decommissioned models.** Qwen3-4B (original), Phi-4-mini-instruct 3.8B, Gemma 3
+4B Instruct and Llama 3.2 3B Instruct were previously served here and were removed
+when the model picker was retired. Two of them carried non-OSI licence conditions
+(Gemma's Prohibited Use Policy, Meta's 700M-MAU ceiling and "Built with Llama"
+notice) which no longer apply to ATOZAS. Reinstating any of them requires
+re-recording those obligations in this file first.
 
 ---
 
-## 3. Chat model — Phi-4-mini-instruct 3.8B (Q4_K_M GGUF)
-
-| Field | Value |
-|---|---|
-| Model name and version | Phi-4-mini-instruct (3.8B) |
-| Quantization | Q4_K_M (4-bit, k-quant medium) |
-| Original repository | https://huggingface.co/microsoft/Phi-4-mini-instruct |
-| GGUF repository | https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF |
-| Publisher | Microsoft |
-| Licence | MIT |
-| Commercial use permitted | Yes, without revenue restriction or usage reporting |
-| Attribution required | Retain the MIT licence notice |
-| File on disk | `/opt/atozas-ai/models/chat/Phi-4-mini-instruct-Q4_K_M.gguf` |
-| Transmits data externally | No — served by the router on `127.0.0.1:8081` |
-| Served by | `atozas-llama.service` |
-
-**Repository choice.** Microsoft publishes safetensors, not GGUF, so the weights
-come from the `unsloth` conversion. It is ungated and MIT-licensed, matching the
-original. The chat template supports a `system` turn, so no prompt rewriting is
-needed.
-
----
-
-## 4. Chat model — Gemma 3 4B Instruct (Q4_K_M GGUF)
-
-| Field | Value |
-|---|---|
-| Model name and version | gemma-3-4b-it |
-| Quantization | Q4_K_M (4-bit, k-quant medium) |
-| Original repository | https://huggingface.co/google/gemma-3-4b-it |
-| GGUF repository | https://huggingface.co/unsloth/gemma-3-4b-it-GGUF |
-| Publisher | Google DeepMind |
-| Licence | **Gemma Terms of Use** (not an OSI licence) |
-| Commercial use permitted | Yes, subject to the Prohibited Use Policy |
-| Attribution required | Terms must accompany any redistribution; modified weights must be marked as modified |
-| File on disk | `/opt/atozas-ai/models/chat/gemma-3-4b-it-Q4_K_M.gguf` |
-| Transmits data externally | No — served by the router on `127.0.0.1:8081` |
-| Served by | `atozas-llama.service` |
-
-**Licence caution.** The Gemma Terms are more restrictive than Apache-2.0: they
-impose downstream use restrictions that bind anyone ATOZAS passes the weights
-to. Serving inference to end users is fine; redistributing the GGUF requires
-carrying the terms with it.
-
-**System prompt handling.** Gemma 3's chat template defines only `user` and
-`model` turns, with no system turn. This was expected to require rewriting the
-prompt application-side, but llama.cpp's jinja rendering folds a `system`
-message into the first user turn instead of dropping or rejecting it. Verified
-against this exact GGUF: a system instruction to prefix replies with a marker
-token was obeyed, so the ATOZAS safety and citation rules do reach the model and
-no special-casing is needed. Re-check this if the GGUF conversion is ever
-swapped for one with a different embedded template.
-
----
-
-## 5. Chat model — Llama 3.2 3B Instruct (Q4_K_M GGUF)
-
-| Field | Value |
-|---|---|
-| Model name and version | Llama-3.2-3B-Instruct |
-| Quantization | Q4_K_M (4-bit, k-quant medium) |
-| Original repository | https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct |
-| GGUF repository | https://huggingface.co/unsloth/Llama-3.2-3B-Instruct-GGUF |
-| Publisher | Meta |
-| Licence | **Llama 3.2 Community License** (not an OSI licence) |
-| Commercial use permitted | Yes, below 700M monthly active users |
-| Attribution required | "Built with Llama" notice; Acceptable Use Policy applies |
-| File on disk | `/opt/atozas-ai/models/chat/Llama-3.2-3B-Instruct-Q4_K_M.gguf` |
-| Transmits data externally | No — served by the router on `127.0.0.1:8081` |
-| Served by | `atozas-llama.service` |
-
-**Licence caution.** The 700M MAU ceiling is the clause to watch. Below it,
-commercial use is unrestricted in practice; above it Meta must grant a separate
-licence. The "Built with Llama" notice is required on any product that uses the
-model, which includes ATOZAS AI while this model is selectable.
-
-**Repository choice.** Meta's own repository is licence-gated and requires an
-accepted agreement plus a Hugging Face token to download. The `unsloth`
-conversion is ungated and carries the same Llama 3.2 licence, so the obligations
-above still apply.
-
----
-
-## 6. Embedding model — Qwen3-Embedding-0.6B (Q8_0 GGUF)
+## 2. Embedding model — Qwen3-Embedding-0.6B (Q8_0 GGUF)
 
 | Field | Value |
 |---|---|
@@ -281,24 +209,125 @@ two up collapses similarity. `server/src/services/rag/embeddings.js` exposes
 cannot get it wrong, and both affixes are environment variables so a future
 model swap stays a configuration change.
 
+**Not used for web reranking, by measurement.** The obvious design was to score
+fetched web passages with this same model. It was benchmarked on the ATOZAS CPU
+box and is not viable at query time:
+
+| Passages embedded | Wall time |
+|---|---|
+| 1 | 5.3 s |
+| 8 | 44.7 s |
+| 16 | timeout at 60 s |
+
+That is ~5.5 s per passage, so reranking even four would exceed the entire
+20-second retrieval budget before the model emits a token. (An earlier
+measurement suggested 15x better throughput; it was invalid, because repeated
+passage text let llama.cpp serve most of it from the prompt cache.) Document
+ingest absorbs this cost happily since it runs asynchronously on the queue —
+query-time reranking cannot.
+
+Web passages are therefore ranked **lexically**, BM25-style, in microseconds
+(`server/src/services/web/rerank.js`). The quality loss is narrower than it
+looks: the semantic match already happened when the search engine ranked the page
+for the query, so what remains is a within-document choice between paragraphs of
+one article, which term overlap handles well. `WEB_RERANK_MODE=embedding`
+restores the embedding path for deployments with a GPU or a dedicated embedding
+host, where the table above does not apply.
+
+`WEB_MIN_SCORE` is a separate threshold from `RAG_MIN_SCORE` — web text is
+noisier and search has already filtered for relevance — and its default tracks
+`WEB_RERANK_MODE`, since lexical coverage (0.15) and cosine similarity (0.45)
+are unrelated scales. Leave it unset unless you have calibrated your own corpus.
+
+---
+
+## 3. Live web retrieval — no model, but part of the answer
+
+Retrieval is not a model, so it has no licence or checksum row. It is recorded
+here because it changes what an answer is based on, and because it is the only
+outbound network path in the system.
+
+| Component | Choice | Licence |
+|---|---|---|
+| Metasearch | SearXNG, self-hosted (`deploy/searxng/`) | AGPL-3.0 |
+| Article extraction | `@mozilla/readability` over `jsdom` | Apache-2.0 / MIT |
+| Reranking | Lexical BM25, in-process (see section 2) | — |
+| Caching | Redis, already deployed | BSD-3-Clause |
+
+Every component is open source and self-hosted. No search API key, no per-query
+billing, no vendor query log.
+
+**Why Readability rather than Trafilatura or Playwright.** Trafilatura extracts
+more accurately from hostile markup, but it is a Python process: adding a Python
+runtime and an IPC boundary to a Node deployment costs more operational surface
+than the accuracy gain is worth. Playwright would additionally run a headless
+Chromium per fetch, competing with `llama-server` for the cores that generate
+tokens. The accepted consequence is that **no JavaScript is executed**, so a page
+that renders its content client-side yields nothing and is skipped. Most
+authoritative sources for the questions this serves — documentation, government
+pages, news articles — are server-rendered.
+
+**Why nothing is persisted.** Web passages live only in a short-TTL Redis fetch
+cache. They are never written into the `Document` / `DocumentChunk` corpus,
+because that corpus is user-owned, access-scoped and assumed curated; mixing
+transient scraped text into it would invalidate the meaning of every existing
+similarity threshold and require an eviction job to stop it growing without
+bound.
+
+**Why the freshness router is not a model call.** Asking the 4B model "does this
+need current information?" before every message would roughly double generation
+cost on a CPU box, for a judgement that keyword evidence gets right most of the
+time, and would be non-deterministic — the same question could route differently
+on consecutive turns. `server/src/services/web/freshness.js` is a deterministic
+classifier instead, biased toward searching: a needless search wastes seconds,
+while a missed one produces a confidently stale answer.
+
+**Security boundary.** Search results are attacker-influenceable — anyone can
+publish a page that ranks — so `server/src/services/web/egressGuard.js` treats
+every URL as hostile. http/https only, default ports only, no credentials in the
+URL, and every hostname resolved with all answers required to be globally
+routable. Redirects are followed manually and re-vetted per hop, because a public
+URL is free to redirect to a private one. Without this, retrieval would be a
+server-side request forgery primitive pointed at MongoDB (27017), Redis (6379),
+llama-server (8081) and the cloud metadata service (169.254.169.254).
+
+**Prompt injection.** Fetched text is untrusted and is handled exactly as
+uploaded documents are: control-stripped, token-capped, fenced inside a
+`<<<SOURCES` block, and preceded by a rule stating that instructions appearing
+inside a source must be treated as quoted content. `citations.js` then discards
+any citation label the model did not actually receive, so a page cannot fabricate
+a reference.
+
+**Dates.** Every web citation carries `retrievedAt` — when ATOZAS read the page —
+and `publishedAt` where the page declares one. Only the first is something ATOZAS
+can vouch for; the second is the publisher's own claim. Both are shown in the UI,
+stored on the message so an old answer keeps the dates it was actually based on,
+and stated in the prompt so the model can say when a fact was true.
+
 ---
 
 ## Adding a new model
+
+Adding a second chat model also means restoring a picker in the client, which was
+removed deliberately (see "Serving architecture"). Consider whether the accuracy
+gain justifies the RAM and the per-model behaviour drift first.
 
 1. Confirm the licence permits commercial use, and verify the repository id
    against `https://huggingface.co/api/models/<id>` — a missing repository
    answers 401, not 404, which is easy to misread as a credentials problem.
 2. Add an entry to `MODEL_REGISTRY` in `server/src/services/ai/modelRegistry.js`.
-   That is the only code change: the fetch scripts, the router preset and the
-   model picker are all generated from the registry.
+   That is the only server change: the fetch scripts and the router preset are
+   both generated from the registry.
 3. Add the `MODEL_SHA256_*` variable it reads to `server/.env.example`.
 4. Run the fetch script (`fetch-models.sh`, or `fetch-models.ps1 -Checksum` on
    Windows) and record the printed SHA-256 in `server/.env` and in the table
    above. Cross-check it against the `lfs.oid` Hugging Face reports for the
    file, which is its SHA-256.
-5. Add a section to this document with every field populated, and update the
-   model counts in the sections above.
-6. Verify `GET /api/v1/admin/ai/status` shows `checksumRecorded: true` for it.
+5. Add a section to this document with every field populated, including any
+   licence obligations that bind downstream users.
+6. Raise `LLAMACPP_MODELS_MAX` only if the host has RAM for a second resident
+   model — roughly 2.5 GB of weights plus KV cache each.
+7. Verify `GET /api/v1/admin/ai/status` shows `checksumRecorded: true` for it.
 
 A model without a recorded checksum is reported as non-compliant on the admin
 status endpoint rather than being silently accepted.

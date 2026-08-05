@@ -7,10 +7,9 @@
 
   The chat server runs in llama.cpp *router* mode: it is started without a
   --model, and instead reads deploy/llama/models.ini (generated from the model
-  registry) to learn every chat model ATOZAS can serve. The router spawns a
-  child server per model on demand and evicts the least-recently-used one once
-  -MaxLoaded models are resident, so the model picker in the UI costs one
-  model's worth of RAM rather than four.
+  registry) to learn which chat model ATOZAS serves. That is one model - there is
+  no model picker - so router mode is here for parity with production and to keep
+  models.ini registry-generated, not for switching.
 
   Note on ports: this machine runs XAMPP Apache on 8080, which is what produced
   the "Local (llama.cpp) request failed (404)" error - the app was reaching
@@ -22,8 +21,9 @@
   additional Q4 4B model costs roughly 2.5 GB of weights plus its KV cache.
 
 .PARAMETER Embeddings
-  Also start the embedding server on 8082. Without it, retrieval falls back to
-  keyword-only search, which is fine for UI work.
+  Also start the embedding server on 8082. Without it, document retrieval falls
+  back to keyword-only search - fine for UI work, but not for judging answer
+  quality. Live web retrieval is unaffected: it ranks passages lexically.
 
 .EXAMPLE
   .\deploy\scripts\dev-llama.ps1

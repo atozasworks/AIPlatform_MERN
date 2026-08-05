@@ -1,9 +1,20 @@
 import ThemeToggle from '../ui/ThemeToggle.jsx';
-import ModelPicker from './ModelPicker.jsx';
 import { useAuth } from '../../store/auth.js';
+import { useChat } from '../../store/chat.js';
 
+/**
+ * Chat header.
+ *
+ * There is no model picker: ATOZAS serves one model, so the model is shown as a
+ * label rather than a control. The live-web badge next to it is the one piece of
+ * state a user genuinely needs, because it changes how much to trust a
+ * time-sensitive answer — with retrieval off, the answer comes from training
+ * data alone and may be out of date.
+ */
 export default function ChatHeader({ onToggleSidebar }) {
   const user = useAuth((s) => s.user);
+  const modelLabel = useChat((s) => s.modelLabel);
+  const webRetrieval = useChat((s) => s.webRetrieval);
   const initial = user?.name?.[0]?.toUpperCase() || 'U';
 
   return (
@@ -27,7 +38,21 @@ export default function ChatHeader({ onToggleSidebar }) {
           <line x1="3" y1="18" x2="21" y2="18" />
         </svg>
       </button>
-      <ModelPicker />
+
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="truncate text-sm font-medium text-slate-700 dark:text-slate-200">
+          {modelLabel || 'ATOZAS AI'}
+        </span>
+        {webRetrieval?.available && (
+          <span
+            title="Time-sensitive questions are answered from freshly retrieved web sources, with citations and retrieval dates."
+            className="flex-none rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-400 dark:ring-emerald-900"
+          >
+            Live web
+          </span>
+        )}
+      </div>
+
       <div className="ml-auto flex items-center gap-3">
         <ThemeToggle />
         <div

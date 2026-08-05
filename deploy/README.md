@@ -1,8 +1,8 @@
 # ATOZAS AI — Operations guide
 
-Self-hosted AI platform: Qwen3-4B-Instruct-2507 and four alternates on
-llama.cpp, behind a Redis/BullMQ queue, streaming over SSE, with local RAG.
-No third-party AI APIs.
+Self-hosted AI platform: one chat model, `Qwen3-4B-Instruct-2507` on llama.cpp,
+behind a Redis/BullMQ queue, streaming over SSE, with local document RAG and
+optional live web retrieval. No third-party AI APIs.
 
 ```
 Browser / PWA
@@ -19,10 +19,22 @@ Redis + BullMQ                     127.0.0.1:6379 — admission and queueing
       ▼
 LLM worker (PM2 fork ×1)           concurrency 2 — the hard CPU ceiling
       │
-      ├─► llama-server chat        127.0.0.1:8081 — router, 5 Q4_K_M models
-      └─► llama-server embeddings  127.0.0.1:8082 — Qwen3-Embedding-0.6B
-                                   MongoDB — conversations, documents, vectors
+      ├─► llama-server chat        127.0.0.1:8081 — Qwen3-4B-Instruct-2507 Q4_K_M
+      ├─► llama-server embeddings  127.0.0.1:8082 — Qwen3-Embedding-0.6B
+      ├─► SearXNG (optional)       127.0.0.1:8888 — metasearch for live retrieval
+      │     └─► public web           the only outbound path; off by default
+      └─► MongoDB                   conversations, documents, vectors
 ```
+
+There is one chat model and no model picker. The reasoning is in
+[MODELS.md](MODELS.md#serving-architecture--one-router-one-chat-model).
+
+**Live web retrieval** answers the questions a frozen model cannot: current
+software versions, prices, laws, officeholders, today's news. It requires the
+self-hosted SearXNG in [deploy/searxng/](searxng/) (Docker on the VPS, or
+`deploy/scripts/dev-searxng.ps1` on Windows/WSL without Docker). See that
+directory's README for setup, and MODELS.md for exactly what does and does not
+leave the host.
 
 ---
 
@@ -47,10 +59,9 @@ wsl -d Ubuntu -e sudo apt-get install -y redis-server
 # Place the models
 mkdir models
 # Download into .\models\ with .\deploy\scripts\fetch-models.ps1, or by hand:
-#   Qwen3-4B-Instruct-2507-Q4_K_M.gguf  (chat — newest, best default)
-#   Qwen3-Embedding-0.6B-Q8_0.gguf      (embeddings, optional locally)
-# The other chat models in deploy/MODELS.md are optional; the router serves
-# whichever GGUFs are present and the picker greys out the rest.
+#   Qwen3-4B-Instruct-2507-Q4_K_M.gguf  (chat — the only chat model)
+#   Qwen3-Embedding-0.6B-Q8_0.gguf      (embeddings for uploaded documents)
+# Roughly 3 GB total.
 
 # Terminal 1 — inference (uses 8081; 8080 is XAMPP Apache on this machine)
 .\deploy\scripts\dev-llama.ps1 -Embeddings
@@ -73,6 +84,38 @@ Verify the stack:
 Invoke-RestMethod http://127.0.0.1:8081/health
 Invoke-RestMethod http://localhost:5000/api/health/ready | ConvertTo-Json -Depth 5
 ```
+
+### Live web retrieval
+
+Full setup and rationale in [deploy/searxng/README.md](searxng/README.md).
+
+On this Windows/WSL box (no Docker Desktop):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\scripts\dev-searxng.ps1
+Invoke-RestMethod 'http://127.0.0.1:8888/search?q=test&format=json'
+```
+
+On a host with Docker:
+
+```powershell
+cd deploy\searxng
+Copy-Item .env.example .env      # then set SEARXNG_SECRET
+docker compose up -d
+Invoke-RestMethod 'http://127.0.0.1:8888/search?q=test&format=json'
+```
+
+Then set `WEB_RETRIEVAL_ENABLED=true` and `SEARXNG_BASE_URL=http://127.0.0.1:8888`
+in `server/.env` and restart **both** the API and the worker — only the worker
+performs retrieval, but both load the config.
+
+A 403 on the JSON probe means `json` is missing from `search.formats` in
+`settings.yml`, which is the usual first-run trap.
+
+To confirm it works end to end, ask something with a temporal cue ("what is the
+latest stable Node.js release") and check the answer carries a
+`Sources (includes live web)` block with retrieval timestamps. The header should
+also show a **Live web** badge.
 
 **If chat returns 404**, `LLAMACPP_BASE_URL` is pointing at something that is
 not llama-server. Check what owns the port:

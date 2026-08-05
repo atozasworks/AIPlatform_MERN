@@ -69,9 +69,16 @@ async function loadJobContext(data) {
  * Runs retrieval when the profile calls for it. A retrieval failure degrades to
  * an ungrounded answer rather than failing the request — except for the
  * rag-grounded profile, where an ungrounded answer would defeat the point.
+ *
+ * Both tiers run behind one `retrieve()` call. The live web tier only engages
+ * when the profile permits it, the operator enabled it, and the freshness router
+ * judges the question to need current information — so an ordinary question pays
+ * none of its latency.
  */
-async function gatherSources({ profile, conversation, question, userId, publish }) {
-  if (!profile.retrieval || !env.rag.enabled || !shouldRetrieve(profile, conversation)) {
+async function gatherSources({ profile, conversation, question, userId, publish, signal }) {
+  const localEnabled = env.rag.enabled && profile.retrieval;
+  const webEnabled = env.web.enabled && profile.web;
+  if ((!localEnabled && !webEnabled) || !shouldRetrieve(profile, conversation)) {
     return { sources: [], degraded: false };
   }
 
@@ -82,6 +89,9 @@ async function gatherSources({ profile, conversation, question, userId, publish 
         userId: String(userId),
         organizationId: conversation.organization ? String(conversation.organization) : null,
       },
+      allowWeb: webEnabled,
+      forceWeb: profile.forceWeb,
+      signal,
     });
 
     if (result.sources.length) {
@@ -93,6 +103,9 @@ async function gatherSources({ profile, conversation, question, userId, publish 
           heading: s.heading || null,
           sourceUri: s.sourceUri || null,
           sourceType: s.sourceType,
+          siteName: s.siteName || null,
+          publishedAt: s.publishedAt || null,
+          retrievedAt: s.retrievedAt || null,
           score: s.score,
         })),
       });
@@ -173,13 +186,26 @@ async function processJob(job) {
     await increment(METRIC.GENERATIONS_STARTED);
     await observe(SAMPLE.QUEUE_WAIT_MS, queueWaitMs);
 
+    // Created before retrieval, not just before generation: live web retrieval
+    // can spend seconds on network I/O, and a user who presses Stop during that
+    // phase expects the fetches to be abandoned rather than to wait them out.
+    const abort = new AbortController();
+
     const retrieval = await gatherSources({
       profile,
       conversation: context.conversation,
       question: context.currentTurn.content,
       userId: data.userId,
       publish,
+      signal: abort.signal,
     });
+
+    // Retrieval is the one phase long enough for a stop request to arrive before
+    // the first token, so it gets its own checkpoint.
+    if (await isCancelled(jobId)) {
+      abort.abort();
+      throw new Cancelled();
+    }
 
     const systemPrompt = buildSystemPrompt({
       profile,
@@ -204,7 +230,6 @@ async function processJob(job) {
     }
 
     // ── Generation ──
-    const abort = new AbortController();
     let firstTokenAt = null;
     let tokenCount = 0;
     let lastCancelCheck = Date.now();

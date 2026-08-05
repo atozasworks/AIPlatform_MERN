@@ -47,6 +47,11 @@ export function extractCitations(text, sources = []) {
       sourceType: source.sourceType,
       chunkIndex: source.chunkIndex,
       score: source.score,
+      // Provenance for live sources. Null on curated uploads, which are
+      // versioned by re-import rather than by date.
+      siteName: source.siteName || null,
+      publishedAt: source.publishedAt || null,
+      retrievedAt: source.retrievedAt || null,
     });
   }
 
@@ -63,7 +68,15 @@ export function stripInvalidCitations(text, invalidLabels = []) {
   return String(text).replace(pattern, '').replace(/[ \t]{2,}/g, ' ');
 }
 
-/** Compact descriptor persisted on the message and sent over SSE. */
+/**
+ * Compact descriptor persisted on the message and sent over SSE.
+ *
+ * `retrievedAt` is included for web sources and is not cosmetic: an answer about
+ * a fast-moving topic is only as good as the moment it was read, and a reader
+ * who cannot see that moment has no way to judge whether to re-check. It is
+ * stored on the message so the date shown next to an old answer stays the date
+ * that answer was actually based on.
+ */
 export function toClientCitation(citation) {
   return {
     label: citation.label,
@@ -73,6 +86,9 @@ export function toClientCitation(citation) {
     sourceType: citation.sourceType,
     documentId: citation.documentId,
     chunkIndex: citation.chunkIndex,
+    siteName: citation.siteName || null,
+    publishedAt: citation.publishedAt || null,
+    retrievedAt: citation.retrievedAt || null,
   };
 }
 

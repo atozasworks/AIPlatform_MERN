@@ -33,9 +33,66 @@ const RETRIEVAL_RULES = [
 ];
 
 /**
+ * Extra rules that apply only when a live web source is present.
+ *
+ * The point of retrieval is defeated if the model blends a freshly fetched fact
+ * with a half-remembered one from training and presents the mixture as current.
+ * These rules force the two apart and make the source's date part of the answer,
+ * so the reader can see what the claim rests on.
+ */
+const LIVE_SOURCE_RULES = [
+  'Sources marked "live web" were fetched from the internet just now. Their dates are shown in the source list.',
+  'For anything time-sensitive, prefer a live source over your own training knowledge, and state the date the information refers to.',
+  'Where a live source contradicts what you remember, follow the source and cite it. Your training data is older.',
+  'Do not present a fact as current unless a live source supports it. If the sources do not cover the current state, say what you know and state plainly that it may be out of date.',
+];
+
+/**
+ * Baseline honesty rule for the no-retrieval case.
+ *
+ * Without this the model answers "the latest version is X" with the confidence
+ * of a fact, when X is only the latest version it was trained on. The freshness
+ * router cannot catch every time-sensitive phrasing, so this is the backstop for
+ * the ones it misses.
+ */
+const STALENESS_RULE =
+  'No external sources were consulted for this answer. If the question touches on anything that changes over time — ' +
+  'software versions, prices, laws, officeholders, current events — say that your information comes from training data ' +
+  'and may be out of date, and suggest what the user should check.';
+
+/** ISO date only: the model does not need the time and it costs tokens. */
+function formatSourceDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
+/**
+ * Builds the bracketed provenance suffix for a source header.
+ *
+ * Written for the model rather than the user: it needs to know which sources are
+ * live and how old each one is in order to follow LIVE_SOURCE_RULES.
+ */
+function describeProvenance(source) {
+  if (source.sourceType !== 'web') return '';
+
+  const parts = ['live web'];
+  if (source.siteName) parts.push(source.siteName);
+
+  const published = formatSourceDate(source.publishedAt);
+  if (published) parts.push(`published ${published}`);
+
+  const retrieved = formatSourceDate(source.retrievedAt);
+  if (retrieved) parts.push(`retrieved ${retrieved}`);
+
+  return ` (${parts.join(', ')})`;
+}
+
+/**
  * Renders retrieved chunks into a fenced, budget-capped source block.
  *
- * @param {Array<{ label: string, title: string, chunkText: string }>} sources
+ * @param {Array<{ label: string, title: string, chunkText: string, sourceType?: string,
+ *                 siteName?: string, publishedAt?: string, retrievedAt?: string }>} sources
  * @param {number} budgetTokens
  */
 export function renderSourceBlock(sources, budgetTokens = env.limits.maxRetrievalContextTokens) {
@@ -45,7 +102,7 @@ export function renderSourceBlock(sources, budgetTokens = env.limits.maxRetrieva
   let used = 0;
 
   for (const source of sources) {
-    const header = `[${source.label}] ${source.title}`;
+    const header = `[${source.label}] ${source.title}${describeProvenance(source)}`;
     const headerCost = estimateTokens(header) + 4;
     const remaining = budgetTokens - used - headerCost;
     if (remaining < 40) break;
@@ -77,8 +134,16 @@ export function renderSourceBlock(sources, budgetTokens = env.limits.maxRetrieva
  * @param {string} [params.language]        User's preferred language hint
  * @returns {string}
  */
-export function buildSystemPrompt({ profile, conversationPrompt, sources = [], language } = {}) {
+export function buildSystemPrompt({ profile, conversationPrompt, sources = [], language, now } = {}) {
   const sections = [BASE_RULES.join('\n')];
+
+  // Without the current date the model cannot tell a fresh source from an old
+  // one, and cannot judge whether its own knowledge is likely stale. It has no
+  // clock, so the date has to be stated.
+  const today = (now instanceof Date ? now : new Date()).toISOString().slice(0, 10);
+  sections.push(
+    `Today's date is ${today}. Your training data has an earlier cutoff, so treat anything that changes over time as unverified unless a source below confirms it.`,
+  );
 
   if (language) {
     sections.push(`The user's preferred language is "${language}". Default to it unless they write in another language.`);
@@ -98,11 +163,16 @@ export function buildSystemPrompt({ profile, conversationPrompt, sources = [], l
   const sourceBlock = renderSourceBlock(sources);
   if (sourceBlock) {
     sections.push(RETRIEVAL_RULES.join('\n'));
+    if (sources.some((s) => s.sourceType === 'web')) {
+      sections.push(LIVE_SOURCE_RULES.join('\n'));
+    }
     sections.push(sourceBlock);
   } else if (profile?.requireRetrieval) {
     sections.push(
       'No sources could be retrieved for this question. Tell the user that ATOZAS has no indexed material covering it, and do not answer from general knowledge.',
     );
+  } else {
+    sections.push(STALENESS_RULE);
   }
 
   return sections.join('\n\n');

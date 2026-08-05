@@ -20,28 +20,6 @@ export const PHASE = {
   GENERATING: 'generating',
 };
 
-/**
- * The picked model outlives a reload, so a user who prefers Llama 3.2 is not
- * silently put back on the default every time they open the app.
- */
-const MODEL_STORAGE_KEY = 'atozas:model';
-
-function readStoredModel() {
-  try {
-    return localStorage.getItem(MODEL_STORAGE_KEY) || '';
-  } catch {
-    return '';
-  }
-}
-
-function storeModel(id) {
-  try {
-    localStorage.setItem(MODEL_STORAGE_KEY, id);
-  } catch {
-    // Private-mode or blocked storage: the selection just won't persist.
-  }
-}
-
 const emptyGeneration = {
   phase: PHASE.IDLE,
   jobId: null,
@@ -57,10 +35,13 @@ export const useChat = create((set, get) => ({
   allMessages: [],
   branchChoices: {},
   messages: [],
-  models: [],
   profiles: [],
   selectedProvider: 'llamacpp',
+  /** The single served model. Not user-selectable; sent so the id is explicit. */
   selectedModel: '',
+  modelLabel: '',
+  /** `{ available, reason }` — drives the live-web badge in the header. */
+  webRetrieval: null,
   selectedProfile: 'balanced',
   generation: { ...emptyGeneration },
   /**
@@ -87,6 +68,14 @@ export const useChat = create((set, get) => ({
     set({ generation: { ...emptyGeneration, notice }, isStreaming: false, _stream: null });
   },
 
+  /**
+   * Loads the served model and the profile catalogue.
+   *
+   * The endpoint still returns a list because the provider layer is
+   * list-shaped, but ATOZAS serves exactly one chat model, so this takes the
+   * server's default and falls back to the first entry rather than offering a
+   * choice.
+   */
   async loadModels() {
     try {
       const [modelData, profileData] = await Promise.all([
@@ -95,31 +84,19 @@ export const useChat = create((set, get) => ({
       ]);
 
       const models = modelData.models || [];
-      // Preference order: what the user last picked, then the engine default,
-      // then anything that is actually loadable. A remembered model that has
-      // since lost its weights must not strand the composer on a dead choice.
-      const remembered = models.find((m) => m.id === readStoredModel() && m.available);
-      const serverDefault = models.find((m) => m.id === modelData.default && m.available);
-      const chosen = remembered || serverDefault || models.find((m) => m.available) || models[0];
+      const chosen = models.find((m) => m.id === modelData.default) || models[0];
 
       set({
-        models,
         profiles: profileData.profiles || [],
         selectedProfile: profileData.default || 'balanced',
         selectedProvider: chosen?.provider || 'llamacpp',
         selectedModel: chosen?.id || '',
+        modelLabel: chosen?.label || '',
+        webRetrieval: modelData.webRetrieval || null,
       });
     } catch {
-      set({ models: [], profiles: [] });
+      set({ profiles: [], modelLabel: '', webRetrieval: null });
     }
-  },
-
-  /** Model picker. The choice is global and applies to the next message sent. */
-  selectModel(modelId) {
-    const model = get().models.find((m) => m.id === modelId);
-    if (!model) return;
-    storeModel(modelId);
-    set({ selectedProvider: model.provider, selectedModel: model.id });
   },
 
   async loadConversations() {
