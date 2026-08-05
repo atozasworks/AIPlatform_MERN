@@ -3,6 +3,8 @@ import { getQueueConnection, key } from '../../config/redis.js';
 import { env } from '../../config/env.js';
 import { AppError } from '../../utils/AppError.js';
 import { logger } from '../../config/logger.js';
+import { releaseSlot } from './userLimits.js';
+import { createStreamPublisher } from './streamBus.js';
 
 /**
  * The single generation queue.
@@ -139,6 +141,14 @@ export async function getQueueDepth() {
  * A waiting job is removed outright. A running job cannot be killed mid-`fetch`
  * from another process, so a flag is set in Redis; the worker polls it between
  * tokens and aborts the inference request within a few tokens.
+ *
+ * The per-user concurrency slot is released here for every cancel path that
+ * will not (or may not) reach the worker's `finally`. Without that, stopping a
+ * still-queued job leaked the slot until its Redis TTL (15 min) and the next
+ * send failed with "You already have a response generating…". Active jobs also
+ * release immediately so Stop / chat-switch can admit a new request without
+ * waiting for the worker to finish aborting; the worker's `releaseSlot` is
+ * idempotent.
  */
 export async function requestCancellation(jobId) {
   const q = getLlmQueue();
@@ -146,19 +156,40 @@ export async function requestCancellation(jobId) {
   if (!job) return { cancelled: false, reason: 'not_found' };
 
   const state = await job.getState();
+  const data = job.data || {};
 
   if (state === 'waiting' || state === 'delayed' || state === 'prioritized') {
     await job.remove().catch(() => {});
-    return { cancelled: true, state };
+    await releaseSlot({
+      userId: data.userId,
+      jobId,
+      fingerprint: data.fingerprint,
+    });
+    // Terminal frame so any attached SSE relay closes instead of idling out.
+    await createStreamPublisher(jobId)
+      .publish('cancelled', { reason: 'user_cancelled' })
+      .catch(() => {});
+    return { cancelled: true, state, slotReleased: true };
   }
 
   if (state === 'active') {
     const redis = getQueueConnection();
     await redis.set(cancelKey(jobId), '1', 'EX', 300);
-    return { cancelled: true, state };
+    await releaseSlot({
+      userId: data.userId,
+      jobId,
+      fingerprint: data.fingerprint,
+    });
+    return { cancelled: true, state, slotReleased: true };
   }
 
-  return { cancelled: false, reason: state };
+  // completed / failed / unknown — clear a leaked reservation if one remains.
+  await releaseSlot({
+    userId: data.userId,
+    jobId,
+    fingerprint: data.fingerprint,
+  });
+  return { cancelled: false, reason: state, slotReleased: true };
 }
 
 export async function isCancelled(jobId) {

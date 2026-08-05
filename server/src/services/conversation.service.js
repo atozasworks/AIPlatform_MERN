@@ -72,11 +72,24 @@ export function buildActivePath(messages, branchChoices = {}) {
 /**
  * Older linear chats stored every user message with parentMessage=null.
  * Repair them into a proper chain so edit-branches don't collide.
+ *
+ * Must NOT run on modern edit-sibling trees: a root-level edit creates a second
+ * user message that also has parentMessage=null (ChatGPT-style versions). The
+ * previous heuristic treated that as "broken linear history" and rewrote the
+ * edited prompt to hang off the first assistant — which collapsed versions and
+ * made a second edit of the same chat fail or look like a one-shot option.
  */
 async function repairLinearParents(conversationId, msgs) {
   const rootUsers = msgs.filter((m) => m.role === 'user' && !m.parentMessage);
+  if (rootUsers.length <= 1) return msgs;
+
+  // Any assistant that already points at a user means the tree is using the
+  // modern parent chain (including edit branches). Leave roots alone.
+  const hasModernParents = msgs.some((m) => m.role === 'assistant' && m.parentMessage);
+  if (hasModernParents) return msgs;
+
   const branched = msgs.filter((m) => m.role === 'user' && m.parentMessage);
-  if (rootUsers.length <= 1 || branched.length > 0) return msgs;
+  if (branched.length > 0) return msgs;
 
   const sorted = [...msgs].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
   let lastAssistantId = null;

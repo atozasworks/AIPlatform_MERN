@@ -104,7 +104,26 @@ export const useChat = create((set, get) => ({
     set({ conversations });
   },
 
+  /**
+   * Cancels any in-flight generation so switching chats / starting a new one
+   * does not leave the previous job burning CPU in the background.
+   */
+  async _stopActiveGeneration() {
+    const stream = get()._stream;
+    if (stream) {
+      try {
+        await stream.cancel();
+      } catch {
+        // Navigation must still proceed if the cancel request fails.
+      }
+    }
+    if (get().generation.phase !== PHASE.IDLE || get()._stream) {
+      get()._endGeneration();
+    }
+  },
+
   async newConversation() {
+    await get()._stopActiveGeneration();
     const { conversation } = await api.post('/conversations', {
       provider: get().selectedProvider,
       model: get().selectedModel || undefined,
@@ -121,6 +140,10 @@ export const useChat = create((set, get) => ({
   },
 
   async openConversation(id) {
+    // Leaving the current chat (or opening another) must cancel its job.
+    if (get().activeId !== id) {
+      await get()._stopActiveGeneration();
+    }
     set({ activeId: id, allMessages: [], branchChoices: {}, messages: [] });
     const { messages } = await api.get(`/conversations/${id}/messages`);
     if (get().activeId === id) get()._syncPath(messages, {});
@@ -155,6 +178,9 @@ export const useChat = create((set, get) => ({
   },
 
   async deleteConversation(id) {
+    if (get().activeId === id) {
+      await get()._stopActiveGeneration();
+    }
     await api.delete(`/conversations/${id}`);
     set((s) => ({
       conversations: s.conversations.filter((c) => c.id !== id),
@@ -215,24 +241,45 @@ export const useChat = create((set, get) => ({
   /**
    * Create a sibling branch with the edited prompt (keeps old versions) and
    * stream a fresh assistant reply — ChatGPT-style edit.
+   * Edits are unlimited: any completed user message can be re-edited any number
+   * of times; each save opens another sibling version (`1/2`, `1/3`, …).
    */
   async editMessage(messageId, content) {
     const text = content.trim();
-    if (!text || get().generation.phase !== PHASE.IDLE) return;
+    if (!text) return;
+
+    // Stop any in-flight reply first so a second (or third…) edit is never
+    // blocked by `sendMessage`'s idle-only gate.
+    if (get().generation.phase !== PHASE.IDLE) {
+      await get()._stopActiveGeneration();
+    }
 
     const activeId = get().activeId;
     if (!activeId) return;
 
-    const { parentMessageId } = await api.post(
-      `/conversations/${activeId}/messages/${messageId}/edit`,
-      { content: text },
-    );
+    try {
+      const { parentMessageId } = await api.post(
+        `/conversations/${activeId}/messages/${messageId}/edit`,
+        { content: text },
+      );
 
-    await get().sendMessage(text, { parentMessageId: parentMessageId ?? null });
+      await get().sendMessage(text, {
+        parentMessageId: parentMessageId ?? null,
+        allowFromEdit: true,
+      });
+    } catch (err) {
+      get()._endGeneration(err.message || 'Could not save the edit. Please try again.');
+    }
   },
 
-  async sendMessage(text, { parentMessageId } = {}) {
-    if (get().generation.phase !== PHASE.IDLE) return;
+  async sendMessage(text, { parentMessageId, allowFromEdit = false } = {}) {
+    if (get().generation.phase !== PHASE.IDLE) {
+      if (allowFromEdit) {
+        await get()._stopActiveGeneration();
+      } else {
+        return;
+      }
+    }
 
     let activeId = get().activeId;
     if (!activeId) {
@@ -296,8 +343,12 @@ export const useChat = create((set, get) => ({
       get()._syncPath(next, choices);
     };
 
+    // Ignore late SSE events after the user has switched away from this chat.
+    const stillHere = () => get().activeId === activeId;
+
     const handlers = {
       onMeta: (meta) => {
+        if (!stillHere()) return;
         const prevUserId = userId;
         const prevAssistantId = assistantId;
         if (meta.userMessageId) userId = meta.userMessageId;
@@ -328,18 +379,24 @@ export const useChat = create((set, get) => ({
         }
       },
 
-      onQueued: (data) =>
+      onQueued: (data) => {
+        if (!stillHere()) return;
         get()._setGeneration({
           phase: PHASE.QUEUED,
           position: data.position ?? 0,
           queueDepth: data.queueDepth ?? 0,
           activeGenerations: data.activeGenerations ?? 0,
-        }),
+        });
+      },
 
       // The model is loaded and prefilling; tokens have not started yet.
-      onStarted: () => get()._setGeneration({ phase: PHASE.PREPARING, position: 0 }),
+      onStarted: () => {
+        if (!stillHere()) return;
+        get()._setGeneration({ phase: PHASE.PREPARING, position: 0 });
+      },
 
       onToken: (t) => {
+        if (!stillHere()) return;
         if (get().generation.phase !== PHASE.GENERATING) {
           get()._setGeneration({ phase: PHASE.GENERATING });
         }
@@ -349,16 +406,25 @@ export const useChat = create((set, get) => ({
         get()._syncPath(next, get().branchChoices);
       },
 
-      onCitations: (sources) => patchById(assistantId, { retrievedSources: sources }),
+      onCitations: (sources) => {
+        if (!stillHere()) return;
+        patchById(assistantId, { retrievedSources: sources });
+      },
 
-      onTitle: (title) =>
+      onTitle: (title) => {
+        if (!stillHere()) return;
         set((s) => ({
           conversations: s.conversations.map((c) =>
             c.id === activeId ? { ...c, title } : c,
           ),
-        })),
+        }));
+      },
 
       onCompleted: (data) => {
+        if (!stillHere()) {
+          sessionStorage.removeItem(`atozas:job:${activeId}`);
+          return;
+        }
         patchById(assistantId, {
           status: 'complete',
           model: data.model,
@@ -374,19 +440,21 @@ export const useChat = create((set, get) => ({
       },
 
       onCancel: () => {
-        patchById(assistantId, { status: 'stopped' });
         sessionStorage.removeItem(`atozas:job:${activeId}`);
+        if (!stillHere()) return;
+        patchById(assistantId, { status: 'stopped' });
         get()._endGeneration();
       },
 
       onError: (err) => {
+        sessionStorage.removeItem(`atozas:job:${activeId}`);
+        if (!stillHere()) return;
         const current = get().allMessages.find((m) => m.id === assistantId);
         patchById(assistantId, {
           status: 'error',
           content: current?.content || '',
           error: err.message,
         });
-        sessionStorage.removeItem(`atozas:job:${activeId}`);
         get()._endGeneration(
           err.code === 'QUEUE_FULL' || err.code === 'INFERENCE_UNAVAILABLE'
             ? 'ATOZAS AI is temporarily unavailable. Please try again in a moment.'
@@ -396,6 +464,7 @@ export const useChat = create((set, get) => ({
 
       // Connection dropped without a terminal event; the worker keeps going.
       onClose: () => {
+        if (!stillHere()) return;
         if (get().generation.phase === PHASE.IDLE) return;
         patchById(assistantId, { status: 'complete' });
         get()._endGeneration('The connection dropped. Reload to see the finished reply.');

@@ -347,6 +347,9 @@ export const resumeGuestStream = asyncHandler(async (req, res) => {
 /** POST /public/stream/:jobId/cancel */
 export const cancelGuestGeneration = asyncHandler(async (req, res) => {
   const result = await requestCancellation(req.params.jobId);
+  if (result.reason === 'not_found') {
+    await releaseSlot({ userId: guestKey(req), jobId: req.params.jobId });
+  }
   return sendSuccess(res, result);
 });
 

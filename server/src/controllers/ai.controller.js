@@ -330,6 +330,11 @@ export const cancelGeneration = asyncHandler(async (req, res) => {
   }
 
   const result = await requestCancellation(jobId);
+  // Job already gone (worker finished, or Redis flushed) — still drop this
+  // jobId from the active set so a leaked slot cannot block the next send.
+  if (result.reason === 'not_found') {
+    await releaseSlot({ userId: String(req.user._id), jobId });
+  }
   return sendSuccess(res, result);
 });
 

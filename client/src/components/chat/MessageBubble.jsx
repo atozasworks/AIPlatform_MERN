@@ -1,7 +1,15 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Markdown from './Markdown.jsx';
 import Citations from './Citations.jsx';
 import { useChat } from '../../store/chat.js';
+
+/** Grow the edit textarea with content (height only; width is layout-controlled). */
+function resizeEditArea(el) {
+  if (!el) return;
+  el.style.height = 'auto';
+  const next = Math.min(Math.max(el.scrollHeight, 72), 240);
+  el.style.height = `${next}px`;
+}
 
 /**
  * Renders a single message. User bubbles include ChatGPT-style copy / edit /
@@ -14,19 +22,11 @@ export default function MessageBubble({ message }) {
   const [draft, setDraft] = useState(message.content);
   const [privacyBusy, setPrivacyBusy] = useState(false);
   const [privacyError, setPrivacyError] = useState(null);
+  const editRef = useRef(null);
   const isStreaming = useChat((s) => s.isStreaming);
   const editMessage = useChat((s) => s.editMessage);
   const selectVersion = useChat((s) => s.selectVersion);
   const markMessagePrivate = useChat((s) => s.markMessagePrivate);
-  // Only the currently served model has a friendly label. Messages generated
-  // before a model change keep their raw id so an old answer is never
-  // misattributed to the model running now.
-  const modelLabel = useChat((s) =>
-    message.model && message.model === s.selectedModel
-      ? s.modelLabel || message.model
-      : message.model,
-  );
-
   // An optimistic row has no server id yet, so it can be neither edited nor
   // addressed by the private-code endpoint until the real id arrives.
   const isTemp = String(message.id).startsWith('tmp-');
@@ -37,6 +37,10 @@ export default function MessageBubble({ message }) {
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
+
+  useEffect(() => {
+    if (editing) resizeEditArea(editRef.current);
+  }, [editing, draft]);
 
   const startEdit = () => {
     setDraft(message.content);
@@ -50,12 +54,13 @@ export default function MessageBubble({ message }) {
 
   const saveEdit = async () => {
     const text = draft.trim();
-    if (!text || text === message.content || isStreaming) {
+    if (!text || text === message.content) {
       setEditing(false);
       return;
     }
     if (isTemp) return;
     setEditing(false);
+    // editMessage stops any in-flight generation, so re-edits are never blocked.
     await editMessage(message.id, text);
   };
 
@@ -78,15 +83,19 @@ export default function MessageBubble({ message }) {
 
   if (isUser) {
     return (
-      <div className="flex justify-end">
-        <div className="max-w-[80%]">
+      <div className={`flex ${editing ? 'justify-stretch' : 'justify-end'}`}>
+        <div className={editing ? 'w-full max-w-none' : 'max-w-[80%]'}>
           {editing ? (
-            <div className="rounded-2xl rounded-br-md border border-brand-300 bg-white p-2 dark:border-brand-700 dark:bg-slate-900">
+            <div className="w-full rounded-2xl rounded-br-md border border-brand-300 bg-white p-3 dark:border-brand-700 dark:bg-slate-900">
               <textarea
+                ref={editRef}
                 value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                rows={Math.min(8, Math.max(2, draft.split('\n').length))}
-                className="w-full resize-y rounded-lg bg-transparent px-2 py-1.5 text-sm outline-none"
+                onChange={(e) => {
+                  setDraft(e.target.value);
+                  resizeEditArea(e.target);
+                }}
+                rows={3}
+                className="min-h-[4.5rem] max-h-60 w-full resize-y rounded-lg bg-transparent px-2 py-2 text-sm leading-relaxed outline-none"
                 autoFocus
               />
               <div className="mt-2 flex justify-end gap-2">
@@ -100,7 +109,7 @@ export default function MessageBubble({ message }) {
                 <button
                   type="button"
                   onClick={saveEdit}
-                  disabled={!draft.trim() || isStreaming}
+                  disabled={!draft.trim()}
                   className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-40"
                 >
                   Save & submit
@@ -112,51 +121,49 @@ export default function MessageBubble({ message }) {
               <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-brand-600 px-4 py-2.5 text-white">
                 {message.content}
               </div>
-              {!isStreaming && (
-                <div className="mt-1.5 flex items-center justify-end gap-1 text-slate-400">
-                  <IconButton onClick={copy} title={copied ? 'Copied' : 'Copy'} label={copied ? 'Copied' : 'Copy'}>
-                    {copied ? <CheckIcon /> : <CopyIcon />}
+              <div className="mt-1.5 flex items-center justify-end gap-1 text-slate-400">
+                <IconButton onClick={copy} title={copied ? 'Copied' : 'Copy'} label={copied ? 'Copied' : 'Copy'}>
+                  {copied ? <CheckIcon /> : <CopyIcon />}
+                </IconButton>
+                {!isTemp && (
+                  <IconButton onClick={startEdit} title="Edit" label="Edit">
+                    <EditIcon />
                   </IconButton>
-                  {!isTemp && (
-                    <IconButton onClick={startEdit} title="Edit" label="Edit">
-                      <EditIcon />
-                    </IconButton>
-                  )}
-                  {canMarkPrivate && (
+                )}
+                {canMarkPrivate && (
+                  <IconButton
+                    onClick={makePrivate}
+                    disabled={privacyBusy || isStreaming}
+                    title="Make private (emails you a unique code)"
+                    label="Make private"
+                  >
+                    <LockIcon />
+                  </IconButton>
+                )}
+                {showVersions && (
+                  <div className="ml-1 flex items-center gap-0.5 text-xs tabular-nums">
                     <IconButton
-                      onClick={makePrivate}
-                      disabled={privacyBusy}
-                      title="Make private (emails you a unique code)"
-                      label="Make private"
+                      onClick={() => selectVersion(message.id, -1)}
+                      disabled={versionIndex <= 1}
+                      title="Previous version"
+                      label="Previous version"
                     >
-                      <LockIcon />
+                      <ChevronLeftIcon />
                     </IconButton>
-                  )}
-                  {showVersions && (
-                    <div className="ml-1 flex items-center gap-0.5 text-xs tabular-nums">
-                      <IconButton
-                        onClick={() => selectVersion(message.id, -1)}
-                        disabled={versionIndex <= 1}
-                        title="Previous version"
-                        label="Previous version"
-                      >
-                        <ChevronLeftIcon />
-                      </IconButton>
-                      <span className="min-w-[2.5rem] text-center text-slate-500">
-                        {versionIndex}/{versionCount}
-                      </span>
-                      <IconButton
-                        onClick={() => selectVersion(message.id, 1)}
-                        disabled={versionIndex >= versionCount}
-                        title="Next version"
-                        label="Next version"
-                      >
-                        <ChevronRightIcon />
-                      </IconButton>
-                    </div>
-                  )}
-                </div>
-              )}
+                    <span className="min-w-[2.5rem] text-center text-slate-500">
+                      {versionIndex}/{versionCount}
+                    </span>
+                    <IconButton
+                      onClick={() => selectVersion(message.id, 1)}
+                      disabled={versionIndex >= versionCount}
+                      title="Next version"
+                      label="Next version"
+                    >
+                      <ChevronRightIcon />
+                    </IconButton>
+                  </div>
+                )}
+              </div>
               {(message.isPrivate || privacyError) && (
                 <div className="mt-1.5 flex justify-end">
                   <PrivateBadge message={message} error={privacyError} />
@@ -194,7 +201,6 @@ export default function MessageBubble({ message }) {
 
         {!streaming && message.content && (
           <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-400">
-            {message.model && <span className="mr-1">{modelLabel}</span>}
             <IconButton onClick={copy} title={copied ? 'Copied' : 'Copy'} label={copied ? 'Copied' : 'Copy'}>
               {copied ? <CheckIcon /> : <CopyIcon />}
             </IconButton>

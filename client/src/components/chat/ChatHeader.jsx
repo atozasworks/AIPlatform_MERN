@@ -5,15 +5,12 @@ import { useChat } from '../../store/chat.js';
 /**
  * Chat header.
  *
- * There is no model picker: ATOZAS serves one model, so the model is shown as a
- * label rather than a control. The live-web badge next to it is the one piece of
- * state a user genuinely needs, because it changes how much to trust a
- * time-sensitive answer — with retrieval off, the answer comes from training
- * data alone and may be out of date.
+ * The underlying model id/label is intentionally not shown to end users —
+ * only the product name. The live-web badge remains, because it changes how
+ * much to trust a time-sensitive answer.
  */
 export default function ChatHeader({ onToggleSidebar }) {
   const user = useAuth((s) => s.user);
-  const modelLabel = useChat((s) => s.modelLabel);
   const webRetrieval = useChat((s) => s.webRetrieval);
   const initial = user?.name?.[0]?.toUpperCase() || 'U';
 
@@ -41,7 +38,7 @@ export default function ChatHeader({ onToggleSidebar }) {
 
       <div className="flex min-w-0 items-center gap-2">
         <span className="truncate text-sm font-medium text-slate-700 dark:text-slate-200">
-          {modelLabel || 'ATOZAS AI'}
+          ATOZAS AI
         </span>
         {webRetrieval?.available && (
           <span

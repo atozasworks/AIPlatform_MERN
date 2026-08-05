@@ -33,11 +33,11 @@ export function buildDisplayPath(allMessages, branchChoices = {}) {
       (preferred && siblings.find((s) => String(s.id) === String(preferred))) ||
       siblings[siblings.length - 1];
 
-    const versionIndex = siblings.findIndex((s) => s.id === user.id);
+    const versionIndex = siblings.findIndex((s) => String(s.id) === String(user.id));
     path.push({
       ...user,
       versions: siblings,
-      versionIndex,
+      versionIndex: versionIndex < 0 ? siblings.length - 1 : versionIndex,
       versionCount: siblings.length,
     });
 
