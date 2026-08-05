@@ -12,14 +12,22 @@ export default function MessageBubble({ message }) {
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
+  const [privacyBusy, setPrivacyBusy] = useState(false);
+  const [privacyError, setPrivacyError] = useState(null);
   const isStreaming = useChat((s) => s.isStreaming);
   const editMessage = useChat((s) => s.editMessage);
   const selectVersion = useChat((s) => s.selectVersion);
+  const markMessagePrivate = useChat((s) => s.markMessagePrivate);
   // Falls back to the raw id for models no longer in the catalogue, so old
   // messages keep attributing their answer to something.
   const modelLabel = useChat(
     (s) => s.models.find((m) => m.id === message.model)?.label || message.model,
   );
+
+  // An optimistic row has no server id yet, so it can be neither edited nor
+  // addressed by the private-code endpoint until the real id arrives.
+  const isTemp = String(message.id).startsWith('tmp-');
+  const canMarkPrivate = !isTemp && !message.isPrivate && message.status !== 'streaming';
 
   const copy = async () => {
     await navigator.clipboard.writeText(message.content);
@@ -43,9 +51,22 @@ export default function MessageBubble({ message }) {
       setEditing(false);
       return;
     }
-    if (String(message.id).startsWith('tmp-')) return;
+    if (isTemp) return;
     setEditing(false);
     await editMessage(message.id, text);
+  };
+
+  const makePrivate = async () => {
+    if (privacyBusy) return;
+    setPrivacyBusy(true);
+    setPrivacyError(null);
+    try {
+      await markMessagePrivate(message.id);
+    } catch (err) {
+      setPrivacyError(err.message || 'Could not make this message private.');
+    } finally {
+      setPrivacyBusy(false);
+    }
   };
 
   const versionCount = message.versionCount || 0;

@@ -12,21 +12,22 @@ import { AppError } from '../utils/AppError.js';
  *  - NoSQL injection sanitization
  *  - HTTP parameter pollution protection
  *
- * The CSP is written for a self-hosted, self-contained deployment: no CDN, no
- * third-party analytics, no external fonts. Everything the SPA needs is served
- * from the same origin, so the policy can stay strict.
+ * The CSP is written for a self-hosted deployment: no analytics CDNs, no
+ * external fonts. The only third-party origins allowed are Google Identity
+ * Services, which the login page loads when a Google client id is configured
+ * on the client. Those origins are always listed here (not gated on the
+ * server's GOOGLE_CLIENT_ID) so a client build that includes Google Sign-In
+ * cannot be blocked by a server env that temporarily lacks the same value.
  */
 export function helmetMiddleware() {
   // Google Identity Services (the "Continue with Google" button) loads a script
   // and an iframe from accounts.google.com and serves avatars from
-  // googleusercontent.com. These are only allowed when Google Sign-In is
-  // configured, so the policy stays maximally strict otherwise.
-  const googleEnabled = env.auth.google.enabled;
-  const gsiScript = googleEnabled ? ['https://accounts.google.com/gsi/client'] : [];
-  const gsiConnect = googleEnabled ? ['https://accounts.google.com/gsi/'] : [];
-  const gsiFrame = googleEnabled ? ['https://accounts.google.com/gsi/'] : [];
-  const gsiStyle = googleEnabled ? ['https://accounts.google.com/gsi/style'] : [];
-  const gsiImg = googleEnabled ? ['https://*.googleusercontent.com'] : [];
+  // googleusercontent.com.
+  const gsiScript = ['https://accounts.google.com/gsi/client'];
+  const gsiConnect = ['https://accounts.google.com/gsi/', 'https://accounts.google.com'];
+  const gsiFrame = ['https://accounts.google.com/gsi/', 'https://accounts.google.com'];
+  const gsiStyle = ['https://accounts.google.com/gsi/style'];
+  const gsiImg = ['https://*.googleusercontent.com'];
 
   return helmet({
     contentSecurityPolicy: {
@@ -40,7 +41,8 @@ export function helmetMiddleware() {
         scriptSrc: ["'self'", ...gsiScript],
         scriptSrcAttr: ["'none'"],
         // Tailwind injects styles at build time, but the runtime still needs
-        // inline style attributes for dynamic values. No external stylesheets.
+        // inline style attributes for dynamic values. GSI injects a tiny
+        // stylesheet for the button; fonts are self-hosted / system only.
         styleSrc: ["'self'", "'unsafe-inline'", ...gsiStyle],
         fontSrc: ["'self'", 'data:'],
         objectSrc: ["'none'"],
@@ -54,7 +56,9 @@ export function helmetMiddleware() {
       },
     },
     crossOriginResourcePolicy: { policy: 'same-site' },
-    crossOriginOpenerPolicy: { policy: 'same-origin' },
+    // same-origin blocks the Google Sign-In popup / FedCM handshake.
+    // same-origin-allow-popups keeps isolation while letting GSI complete.
+    crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
     referrerPolicy: { policy: 'no-referrer' },
     // HSTS only makes sense once TLS terminates at Nginx in production.
     hsts: env.isProd ? { maxAge: 31536000, includeSubDomains: true, preload: false } : false,

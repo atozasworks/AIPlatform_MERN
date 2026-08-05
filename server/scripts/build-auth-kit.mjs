@@ -31,7 +31,15 @@ try {
   const distEsm = path.join(pkgDir, 'dist', 'index.mjs');
   if (!existsSync(distEsm)) {
     console.log(`[build-auth-kit] Compiling ${PKG} (no dist found)...`);
-    execSync('npx --yes tsup', { cwd: pkgDir, stdio: 'inherit' });
+    // npm publish of this package omits dist; tsup needs typescript present in
+    // the package tree. Production installs often omit server devDependencies,
+    // and a bare `npx tsup` cache won't see them either — install build tools
+    // into the package itself before compiling.
+    execSync('npm install --no-save --no-package-lock typescript tsup', {
+      cwd: pkgDir,
+      stdio: 'inherit',
+    });
+    execSync('npx tsup', { cwd: pkgDir, stdio: 'inherit' });
   }
   patchEntryPoints(pkgDir);
   console.log(`[build-auth-kit] ${PKG} is ready.`);
