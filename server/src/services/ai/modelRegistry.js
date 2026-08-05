@@ -48,6 +48,29 @@ const CHAT_CONTEXT_WINDOW = 8192;
 /** @type {ModelRecord[]} */
 export const MODEL_REGISTRY = [
   {
+    id: 'qwen3-4b-instruct-2507',
+    name: 'Qwen3-4B-Instruct-2507 (GGUF, Q4_K_M quantization)',
+    // The July 2025 refresh of Qwen3-4B: instruct-only (no thinking mode) with
+    // a later knowledge cutoff than the original release below.
+    repository: 'https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507',
+    // Qwen publishes safetensors for this revision, not GGUF. Note that
+    // Qwen/Qwen3-4B-Instruct-2507-GGUF does not exist — see deploy/MODELS.md.
+    ggufRepository: 'https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF',
+    license: 'Apache-2.0',
+    commercialUse: true,
+    file: 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
+    sha256: process.env.MODEL_SHA256_QWEN3_4B_2507 || '',
+    transmitsDataExternally: false,
+    role: 'chat',
+    runtime: {
+      contextWindow: CHAT_CONTEXT_WINDOW,
+      // No extraBody: this revision dropped the hybrid thinking mode, so
+      // enable_thinking is not a template argument it accepts.
+      label: 'Qwen3 4B Instruct 2507',
+      blurb: 'Newest here. Broadest recent knowledge; best general default.',
+    },
+  },
+  {
     id: 'qwen3-4b-instruct',
     name: 'Qwen3-4B (GGUF, Q4_K_M quantization)',
     // Official Qwen release. Qwen3-4B is instruction-tuned with a switchable
@@ -65,7 +88,7 @@ export const MODEL_REGISTRY = [
       // Qwen3 exposes reasoning as a template flag; CPU deployments keep it off.
       extraBody: { chat_template_kwargs: { enable_thinking: false } },
       label: 'Qwen3 4B',
-      blurb: 'Balanced default. Strongest multilingual coverage of the four.',
+      blurb: 'Original Qwen3 release. Strongest multilingual coverage here.',
     },
   },
   {
@@ -156,9 +179,10 @@ export function getModelRecord(id) {
 /**
  * Direct download URL for a record's GGUF.
  *
- * `ggufRepository` wins when present: for Phi-4, Gemma 3 and Llama 3.2 the
- * original repository holds safetensors (and is licence-gated), while the GGUF
- * conversion lives in a separate, ungated repository.
+ * `ggufRepository` wins when present: for Qwen3-4B-Instruct-2507, Phi-4,
+ * Gemma 3 and Llama 3.2 the original repository holds safetensors (and for the
+ * last two is licence-gated), while the GGUF conversion lives in a separate,
+ * ungated repository.
  */
 export function getModelDownloadUrl(record) {
   const repo = (record.ggufRepository || record.repository).replace(

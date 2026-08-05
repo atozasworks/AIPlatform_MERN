@@ -1,7 +1,8 @@
 # ATOZAS AI — Operations guide
 
-Self-hosted AI platform: Qwen3-4B on llama.cpp, behind a Redis/BullMQ queue,
-streaming over SSE, with local RAG. No third-party AI APIs.
+Self-hosted AI platform: Qwen3-4B-Instruct-2507 and four alternates on
+llama.cpp, behind a Redis/BullMQ queue, streaming over SSE, with local RAG.
+No third-party AI APIs.
 
 ```
 Browser / PWA
@@ -18,7 +19,7 @@ Redis + BullMQ                     127.0.0.1:6379 — admission and queueing
       ▼
 LLM worker (PM2 fork ×1)           concurrency 2 — the hard CPU ceiling
       │
-      ├─► llama-server chat        127.0.0.1:8081 — Qwen3-4B-Q4_K_M
+      ├─► llama-server chat        127.0.0.1:8081 — router, 5 Q4_K_M models
       └─► llama-server embeddings  127.0.0.1:8082 — Qwen3-Embedding-0.6B
                                    MongoDB — conversations, documents, vectors
 ```
@@ -45,9 +46,11 @@ wsl -d Ubuntu -e sudo apt-get install -y redis-server
 
 # Place the models
 mkdir models
-# Download into .\models\ :
-#   Qwen3-4B-Q4_K_M.gguf              (chat)
-#   Qwen3-Embedding-0.6B-Q8_0.gguf    (embeddings, optional locally)
+# Download into .\models\ with .\deploy\scripts\fetch-models.ps1, or by hand:
+#   Qwen3-4B-Instruct-2507-Q4_K_M.gguf  (chat — newest, best default)
+#   Qwen3-Embedding-0.6B-Q8_0.gguf      (embeddings, optional locally)
+# The other chat models in deploy/MODELS.md are optional; the router serves
+# whichever GGUFs are present and the picker greys out the rest.
 
 # Terminal 1 — inference (uses 8081; 8080 is XAMPP Apache on this machine)
 .\deploy\scripts\dev-llama.ps1 -Embeddings

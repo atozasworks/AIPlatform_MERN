@@ -14,7 +14,7 @@ file is the human-readable record; the machine-readable copy lives in
 | Any prompt, document or embedding transmitted externally | No |
 | All models permit commercial use | Yes — but two carry conditions, see below |
 
-Two of the four chat models are **not** under a permissive OSI licence, and the
+Two of the five chat models are **not** under a permissive OSI licence, and the
 difference is operational, not academic:
 
 - **Gemma 3 4B** — Gemma Terms of Use. Commercial use is permitted, but Google's
@@ -24,9 +24,9 @@ difference is operational, not academic:
   only below 700 million monthly active users; above that Meta requires a
   separate licence. Products built on it must carry a "Built with Llama" notice.
 
-Qwen3-4B (Apache-2.0) and Phi-4-mini (MIT) have no such conditions. If ATOZAS
-ever needs to ship weights to a customer or cross the MAU threshold, the two
-conditioned models are the ones to re-examine.
+Both Qwen3-4B builds (Apache-2.0) and Phi-4-mini (MIT) have no such conditions.
+If ATOZAS ever needs to ship weights to a customer or cross the MAU threshold,
+the two conditioned models are the ones to re-examine.
 
 The no-external-egress property is enforced in code, not by convention:
 `assertSelfHosted()` in `server/src/config/env.js` runs at boot on both the API
@@ -35,7 +35,7 @@ loopback, an RFC1918 private range, or an explicitly allowlisted host. The
 Groq, OpenAI, Anthropic, Gemini, Cohere, OpenRouter and Ollama providers have
 been deleted from the codebase entirely — there is no code path to reach them.
 
-## Serving architecture — one router, four chat models
+## Serving architecture — one router, five chat models
 
 `llama-server` runs in **router mode**: started without `--model`, it reads
 `deploy/llama/models.ini` and fronts every chat model on `127.0.0.1:8081`,
@@ -45,8 +45,8 @@ request selects the target, which is how the model picker in the UI works
 without a redeploy.
 
 `--models-max` defaults to **1**. That is a memory decision: each resident Q4 4B
-model costs roughly 2.5 GB of weights plus its KV cache, so keeping all four
-loaded would need ~10 GB that a 16 GB host does not have to spare alongside
+model costs roughly 2.5 GB of weights plus its KV cache, so keeping all five
+loaded would need ~13 GB that a 16 GB host does not have to spare alongside
 MongoDB, Redis and the Node processes. The cost of the default is that the first
 request after switching models pays a model load from disk.
 
@@ -59,7 +59,48 @@ instead of failing at generation time.
 
 ---
 
-## 1. Chat model — Qwen3-4B (Q4_K_M GGUF)
+## 1. Chat model — Qwen3-4B-Instruct-2507 (Q4_K_M GGUF)
+
+| Field | Value |
+|---|---|
+| Model name and version | Qwen3-4B-Instruct-2507 (July 2025 revision) |
+| Quantization | Q4_K_M (4-bit, k-quant medium) |
+| Original repository | https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507 |
+| GGUF repository | https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF |
+| Publisher | Alibaba Cloud / Qwen team (GGUF conversion by Unsloth) |
+| Licence | Apache-2.0 |
+| Commercial use permitted | Yes, without revenue restriction or usage reporting |
+| Attribution required | Retain the Apache-2.0 licence notice |
+| File on disk | `/opt/atozas-ai/models/chat/Qwen3-4B-Instruct-2507-Q4_K_M.gguf` |
+| Verified size | 2382 MB |
+| SHA-256 | `3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597` |
+| Transmits data externally | No — served by the router on `127.0.0.1:8081` |
+| Served by | `atozas-llama.service` |
+
+**Why this is the default** (`LLAMACPP_MODEL=qwen3-4b-instruct-2507`). It is the
+most recent chat model in the register, and its knowledge cutoff is later than
+the original Qwen3-4B below, Phi-4-mini and Llama 3.2. That matters for
+questions the retrieval layer does not cover: where no source is fetched, the
+answer comes from the weights alone. A host that has not downloaded this GGUF
+must point `LLAMACPP_MODEL` at a model it does have, or the default selection
+resolves to a model the router cannot serve.
+
+**Repository choice.** Qwen publishes safetensors for this revision, not GGUF.
+`Qwen/Qwen3-4B-Instruct-2507-GGUF` **does not exist** — Hugging Face answers a
+missing repository with HTTP 401 rather than 404 (so as not to disclose whether
+a private repository exists), which reads like a credentials problem and is
+easy to misdiagnose. Verify any new repository id against
+`https://huggingface.co/api/models/<id>` before relying on it. The Unsloth
+conversion is ungated and carries the same Apache-2.0 licence as the original.
+
+**No thinking switch.** Unlike the original Qwen3-4B, the 2507 revision is
+instruct-only: Qwen split the hybrid model into separate Instruct and Thinking
+releases. It therefore takes no `enable_thinking` template argument, and its
+registry entry has no `extraBody`. `LLAMACPP_THINKING` has no effect on it.
+
+---
+
+## 2. Chat model — Qwen3-4B (Q4_K_M GGUF)
 
 | Field | Value |
 |---|---|
@@ -76,13 +117,9 @@ instead of failing at generation time.
 | Transmits data externally | No — served by `llama-server` bound to `127.0.0.1:8081` |
 | Served by | `atozas-llama.service` |
 
-**Repository choice.** This is the Qwen team's own GGUF publication. An earlier
-draft of `fetch-models.sh` pointed at `Qwen/Qwen3-4B-Instruct-2507-GGUF`, which
-does not exist; Hugging Face answers a missing repository with HTTP 401 rather
-than 404 (so as not to disclose whether a private repository exists), which
-reads like a credentials problem and is easy to misdiagnose. Verify any new
-repository id against `https://huggingface.co/api/models/<id>` before relying
-on it.
+**Repository choice.** This is the Qwen team's own GGUF publication, which is
+why this entry has no separate `ggufRepository`. The 2507 revision above has
+one, because Qwen did not repeat the GGUF publication for it — see section 1.
 
 **Reasoning mode.** Qwen3 can emit chain-of-thought inside `<think>…</think>`.
 It is disabled by default (`LLAMACPP_THINKING=false`), which passes
@@ -94,7 +131,7 @@ stream, so hidden reasoning can never reach a user even if the model emits it.
 
 ---
 
-## 2. Chat model — Phi-4-mini-instruct 3.8B (Q4_K_M GGUF)
+## 3. Chat model — Phi-4-mini-instruct 3.8B (Q4_K_M GGUF)
 
 | Field | Value |
 |---|---|
@@ -117,7 +154,7 @@ needed.
 
 ---
 
-## 3. Chat model — Gemma 3 4B Instruct (Q4_K_M GGUF)
+## 4. Chat model — Gemma 3 4B Instruct (Q4_K_M GGUF)
 
 | Field | Value |
 |---|---|
@@ -149,7 +186,7 @@ swapped for one with a different embedded template.
 
 ---
 
-## 4. Chat model — Llama 3.2 3B Instruct (Q4_K_M GGUF)
+## 5. Chat model — Llama 3.2 3B Instruct (Q4_K_M GGUF)
 
 | Field | Value |
 |---|---|
@@ -177,7 +214,7 @@ above still apply.
 
 ---
 
-## 5. Embedding model — Qwen3-Embedding-0.6B (Q8_0 GGUF)
+## 6. Embedding model — Qwen3-Embedding-0.6B (Q8_0 GGUF)
 
 | Field | Value |
 |---|---|
@@ -248,11 +285,19 @@ model swap stays a configuration change.
 
 ## Adding a new model
 
-1. Confirm the licence permits commercial use and record the exact repository URL.
+1. Confirm the licence permits commercial use, and verify the repository id
+   against `https://huggingface.co/api/models/<id>` — a missing repository
+   answers 401, not 404, which is easy to misread as a credentials problem.
 2. Add an entry to `MODEL_REGISTRY` in `server/src/services/ai/modelRegistry.js`.
-3. Add a download entry to `deploy/scripts/fetch-models.sh`.
-4. Run the fetch script, record the printed SHA-256 in `server/.env` and in the table above.
-5. Add a row to this document with every field populated.
+   That is the only code change: the fetch scripts, the router preset and the
+   model picker are all generated from the registry.
+3. Add the `MODEL_SHA256_*` variable it reads to `server/.env.example`.
+4. Run the fetch script (`fetch-models.sh`, or `fetch-models.ps1 -Checksum` on
+   Windows) and record the printed SHA-256 in `server/.env` and in the table
+   above. Cross-check it against the `lfs.oid` Hugging Face reports for the
+   file, which is its SHA-256.
+5. Add a section to this document with every field populated, and update the
+   model counts in the sections above.
 6. Verify `GET /api/v1/admin/ai/status` shows `checksumRecorded: true` for it.
 
 A model without a recorded checksum is reported as non-compliant on the admin

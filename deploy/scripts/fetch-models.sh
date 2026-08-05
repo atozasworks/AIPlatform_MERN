@@ -38,9 +38,9 @@ command -v curl >/dev/null || die "curl is required."
 command -v sha256sum >/dev/null || die "sha256sum is required."
 command -v node >/dev/null || die "node is required (the catalogue comes from the model registry)."
 
-# ── Disk space guard: four Q4 chat models plus embeddings is roughly 10 GB ──
+# ── Disk space guard: five Q4 chat models plus embeddings is roughly 13 GB ──
 AVAIL_KB=$(df -Pk "${MODEL_ROOT%/*}" | awk 'NR==2 {print $4}')
-(( AVAIL_KB > 12 * 1024 * 1024 )) || die "Less than 12 GB free on the model volume."
+(( AVAIL_KB > 15 * 1024 * 1024 )) || die "Less than 15 GB free on the model volume."
 
 fetch() {
   local name="$1" url="$2" dir="$3" file="$4" expected="$5" license="$6"

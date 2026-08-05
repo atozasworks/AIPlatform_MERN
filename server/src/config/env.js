@@ -179,7 +179,7 @@ export const env = {
       // Empty = every chat model in modelRegistry.js. Narrow it per deployment
       // when a host does not have all the weights on disk.
       models: list(process.env.LLAMACPP_MODELS),
-      defaultModel: process.env.LLAMACPP_MODEL || 'qwen3-4b-instruct',
+      defaultModel: process.env.LLAMACPP_MODEL || 'qwen3-4b-instruct-2507',
       // Fallback prompt budget for models with no registry runtime entry.
       contextWindow: num(process.env.LLAMACPP_CONTEXT_WINDOW, 8192),
       // Mirrors --models-max. 1 keeps a single model resident, which is the

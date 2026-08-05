@@ -12,6 +12,7 @@
   that llama-server would later fail to load in a confusing way.
 
   Licences differ per model and are printed before each download:
+    Qwen3-4B-2507     Apache-2.0
     Qwen3-4B          Apache-2.0
     Phi-4-mini        MIT
     Gemma 3 4B        Gemma Terms of Use (+ Prohibited Use Policy)
@@ -70,7 +71,7 @@ $drive = Get-PSDrive -Name (Split-Path -Qualifier $ModelDir).TrimEnd(':')
 $freeGB = [Math]::Round($drive.Free / 1GB, 1)
 Write-Host "    target:    $ModelDir"
 Write-Host "    free disk: $freeGB GB"
-if ($freeGB -lt 10) { Write-Warn "Less than 10 GB free; the full set needs roughly 10 GB." }
+if ($freeGB -lt 13) { Write-Warn "Less than 13 GB free; the full set needs roughly 13 GB." }
 
 $downloaded = 0
 foreach ($model in $manifest) {
