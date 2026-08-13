@@ -54,16 +54,25 @@ export async function createGuestSession(guestId, { profile, provider, model } =
   });
 }
 
-export async function listGuestSessions(guestId, { q, limit = 50 } = {}) {
+export async function listGuestSessions(guestId, { q, limit = 50, archived = false } = {}) {
   if (!guestId) return [];
-  const query = { guestId, deletedAt: null };
+  const query = {
+    guestId,
+    deletedAt: null,
+  };
+  if (archived === true || archived === 'true') {
+    query.archived = true;
+  } else {
+    // Treat missing field as not archived (legacy rooms created before the flag).
+    query.archived = { $ne: true };
+  }
   const search = String(q || '').trim();
   if (search) {
     query.title = { $regex: escapeRegex(search), $options: 'i' };
   }
 
   const rooms = await PublicRoom.find(query)
-    .sort({ lastMessageAt: -1 })
+    .sort({ pinned: -1, lastMessageAt: -1 })
     .limit(Math.min(100, Number(limit) || 50))
     .lean();
 
@@ -78,6 +87,64 @@ export async function listGuestSessions(guestId, { q, limit = 50 } = {}) {
     if (hasMsg) withMessages.push(withPublicId(room));
   }
   return withMessages;
+}
+
+/** Patch title / pinned / archived on an owned guest session. */
+export async function updateGuestSession(guestId, roomId, patch = {}) {
+  const room = await getOwnedGuestSession(guestId, roomId);
+  if (typeof patch.title === 'string') {
+    const title = patch.title.trim().slice(0, 200);
+    if (!title) throw AppError.badRequest('Title cannot be empty');
+    room.title = title;
+  }
+  if (typeof patch.pinned === 'boolean') room.pinned = patch.pinned;
+  if (typeof patch.archived === 'boolean') {
+    room.archived = patch.archived;
+    // Archiving clears the pin so archived lists stay simple.
+    if (patch.archived) room.pinned = false;
+  }
+  await room.save();
+  return room;
+}
+
+/** Creates (or returns) a read-only share token for this session. */
+export async function enableGuestShare(guestId, roomId) {
+  const room = await getOwnedGuestSession(guestId, roomId);
+  if (!room.shareToken) {
+    room.shareToken = crypto.randomBytes(24).toString('hex');
+    await room.save();
+  }
+  return room;
+}
+
+export async function disableGuestShare(guestId, roomId) {
+  const room = await getOwnedGuestSession(guestId, roomId);
+  room.shareToken = null;
+  await room.save();
+  return room;
+}
+
+/** Public read of a shared guest session (no cookie ownership required). */
+export async function getSharedGuestSession(token) {
+  const shareToken = String(token || '').trim();
+  if (!/^[a-f0-9]{32,64}$/i.test(shareToken)) {
+    throw AppError.notFound('Shared chat not found');
+  }
+  const room = await PublicRoom.findOne({
+    shareToken,
+    deletedAt: null,
+  });
+  if (!room) throw AppError.notFound('Shared chat not found');
+  const messages = await listPublicMessages(room._id);
+  return {
+    session: {
+      id: String(room._id),
+      title: room.title,
+      createdAt: room.createdAt,
+      lastMessageAt: room.lastMessageAt,
+    },
+    messages,
+  };
 }
 
 export async function getOwnedGuestSession(guestId, roomId) {

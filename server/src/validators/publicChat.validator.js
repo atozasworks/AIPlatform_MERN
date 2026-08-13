@@ -21,6 +21,7 @@ export const publicSessionListSchema = {
   query: z.object({
     q: z.string().trim().max(200).optional(),
     limit: z.coerce.number().int().min(1).max(100).optional(),
+    archived: z.enum(['true', 'false']).optional(),
   }),
 };
 
@@ -36,6 +37,28 @@ export const publicSessionCreateSchema = {
 
 export const publicSessionIdSchema = {
   params: z.object({ id: objectId }),
+};
+
+export const publicSessionUpdateSchema = {
+  params: z.object({ id: objectId }),
+  body: z
+    .object({
+      title: z.string().trim().min(1).max(200).optional(),
+      pinned: z.boolean().optional(),
+      archived: z.boolean().optional(),
+    })
+    .refine((b) => b.title !== undefined || b.pinned !== undefined || b.archived !== undefined, {
+      message: 'Provide title, pinned, and/or archived',
+    }),
+};
+
+export const publicShareTokenSchema = {
+  params: z.object({
+    token: z
+      .string()
+      .trim()
+      .regex(/^[a-fA-F0-9]{32,64}$/, 'Invalid share token'),
+  }),
 };
 
 export const publicRoomStreamSchema = {

@@ -31,6 +31,7 @@ function mapMessage(m) {
     status: m.status || 'complete',
     model: m.model,
     provider: m.provider,
+    citations: m.citations || [],
     createdAt: m.createdAt,
     error: m.error,
   };
@@ -49,6 +50,7 @@ export const usePublicChat = create((set, get) => ({
   loadingHistory: true,
   historyError: null,
   searchQuery: '',
+  showArchived: false,
   _stream: null,
 
   _setGeneration(patch) {
@@ -64,6 +66,17 @@ export const usePublicChat = create((set, get) => ({
 
   setSearchQuery(searchQuery) {
     set({ searchQuery });
+  },
+
+  setShowArchived(showArchived) {
+    set({ showArchived: Boolean(showArchived) });
+  },
+
+  _patchSessionLocal(id, patch) {
+    set((s) => ({
+      sessions: s.sessions.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+      session: s.session?.id === id ? { ...s.session, ...patch } : s.session,
+    }));
   },
 
   async loadModels() {
@@ -85,9 +98,14 @@ export const usePublicChat = create((set, get) => ({
 
   async loadSessions(q) {
     const query = q !== undefined ? q : get().searchQuery;
+    const archived = get().showArchived;
     set({ loadingHistory: true, historyError: null });
     try {
-      const qs = query?.trim() ? `?q=${encodeURIComponent(query.trim())}` : '';
+      const params = new URLSearchParams();
+      if (query?.trim()) params.set('q', query.trim());
+      if (archived) params.set('archived', 'true');
+      else params.set('archived', 'false');
+      const qs = params.toString() ? `?${params.toString()}` : '';
       const { sessions } = await api.get(`/public/sessions${qs}`);
       set({ sessions: sessions || [], loadingHistory: false });
     } catch (err) {
@@ -145,6 +163,40 @@ export const usePublicChat = create((set, get) => ({
         messages: [],
       });
     }
+  },
+
+  async updateSession(id, patch) {
+    const { session } = await api.patch(`/public/sessions/${id}`, patch);
+    const archivedView = get().showArchived;
+    // Moving between active ↔ archived lists removes it from the current list.
+    if (typeof patch.archived === 'boolean' && patch.archived !== archivedView) {
+      set((s) => ({
+        sessions: s.sessions.filter((c) => c.id !== id),
+        ...(s.activeId === id ? { activeId: null, session: null, messages: [] } : {}),
+      }));
+      return session;
+    }
+    get()._patchSessionLocal(id, session);
+    // Keep pinned chats at the top of the current list.
+    set((s) => ({
+      sessions: [...s.sessions].sort((a, b) => {
+        if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+        return new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0);
+      }),
+    }));
+    return session;
+  },
+
+  async shareSession(id) {
+    const { shareToken, session } = await api.post(`/public/sessions/${id}/share`, {});
+    if (session) get()._patchSessionLocal(id, session);
+    const url = `${window.location.origin}/share/${shareToken}`;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      /* clipboard may be blocked; still return the URL for the UI to show */
+    }
+    return { shareToken, url };
   },
 
   async deleteSession(id) {
@@ -274,6 +326,11 @@ export const usePublicChat = create((set, get) => ({
 
       onStarted: () => get()._setGeneration({ phase: PHASE.PREPARING, position: 0 }),
 
+      onCitation: (data) => {
+        if (!data?.sources?.length) return;
+        patchById(assistantId, { citations: data.sources });
+      },
+
       onToken: (t) => {
         if (get().generation.phase !== PHASE.GENERATING) {
           get()._setGeneration({ phase: PHASE.GENERATING });
@@ -289,6 +346,7 @@ export const usePublicChat = create((set, get) => ({
         patchById(assistantId, {
           status: 'complete',
           model: data.model,
+          ...(data.citations?.length ? { citations: data.citations } : {}),
         });
         // Ensure the session appears in history after the first real turn.
         get().loadSessions();

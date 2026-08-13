@@ -8,6 +8,8 @@ import { aiGateway } from '../ai/AIGateway.js';
 import { resolveProfile } from '../ai/prompts.js';
 import { buildSystemPrompt } from '../ai/systemPrompt.js';
 import { buildBudgetedMessages } from '../ai/tokenBudget.js';
+import { retrieveFromWeb } from '../web/webRetriever.js';
+import { extractCitations, stripInvalidCitations, toClientCitation } from '../rag/citations.js';
 import { PublicRoom } from '../../models/PublicRoom.js';
 import { PublicMessage } from '../../models/PublicMessage.js';
 import { getPublicHistoryForModel } from '../publicChat.service.js';
@@ -28,6 +30,47 @@ class Cancelled extends Error {
   constructor() {
     super('cancelled');
     this.name = 'Cancelled';
+  }
+}
+
+/**
+ * Live web retrieval for guests.
+ *
+ * Guests never touch the document RAG corpus (that is user-scoped), but the live
+ * web tier needs no user data — so a pre-login visitor asking a time-sensitive
+ * question gets the same freshly-sourced answer a logged-in user would, instead
+ * of a stale training-data guess. Web retrieval is strictly additive and never
+ * throws: any failure yields no sources and the prompt's staleness caveat.
+ */
+async function gatherGuestWeb({ profile, question, publish, signal }) {
+  if (!env.web.enabled || !profile.web) return [];
+
+  try {
+    const result = await retrieveFromWeb({
+      question,
+      signal,
+      force: profile.forceWeb,
+    });
+
+    if (result.sources.length) {
+      await publish('citation', {
+        stage: 'retrieved',
+        sources: result.sources.map((s) => ({
+          label: s.label,
+          title: s.documentTitle,
+          heading: s.heading || null,
+          sourceUri: s.sourceUri || null,
+          sourceType: s.sourceType,
+          siteName: s.siteName || null,
+          publishedAt: s.publishedAt || null,
+          retrievedAt: s.retrievedAt || null,
+          score: s.score,
+        })),
+      });
+    }
+    return result.sources;
+  } catch {
+    return [];
   }
 }
 
@@ -112,11 +155,29 @@ export async function processGuestJob(job) {
       currentTurn = { role: 'user', content: String(data.content || '') };
     }
 
-    // Guests never use RAG — keeps retrieval scoped to authenticated users.
+    // Created before retrieval so a Stop pressed during the web-fetch phase
+    // abandons the network I/O instead of waiting it out.
+    const abort = new AbortController();
+
+    // Guests skip document RAG (user-scoped) but DO get the live web tier, so
+    // time-sensitive questions are answered from freshly retrieved sources
+    // rather than stale training data.
+    const webSources = await gatherGuestWeb({
+      profile,
+      question: currentTurn.content,
+      publish,
+      signal: abort.signal,
+    });
+
+    if (await isCancelled(jobId)) {
+      abort.abort();
+      throw new Cancelled();
+    }
+
     const systemPrompt = buildSystemPrompt({
       profile: { ...profile, retrieval: false, requireRetrieval: false },
       conversationPrompt: '',
-      sources: [],
+      sources: webSources,
       language: data.language,
     });
 
@@ -128,7 +189,6 @@ export async function processGuestJob(job) {
       contextWindow: provider.getContextWindow?.(model) ?? provider.contextWindow,
     });
 
-    const abort = new AbortController();
     let firstTokenAt = null;
     let tokenCount = 0;
     let lastCancelCheck = Date.now();
@@ -177,6 +237,14 @@ export async function processGuestJob(job) {
       abort.abort();
     }
 
+    // Keep only citations that map to a source we actually supplied; drop the
+    // rest so the answer never shows a [S#] the reader cannot open.
+    const { citations, invalidLabels } = extractCitations(text, webSources);
+    if (invalidLabels.length) {
+      text = stripInvalidCitations(text, invalidLabels);
+    }
+    const clientCitations = citations.map(toClientCitation);
+
     const completedAt = Date.now();
     const generationMs = completedAt - (firstTokenAt || startedAt);
     const tokensPerSecond = generationMs > 0 ? (tokenCount / generationMs) * 1000 : 0;
@@ -186,6 +254,7 @@ export async function processGuestJob(job) {
       assistantMessage.status = 'complete';
       assistantMessage.model = finalModel;
       assistantMessage.provider = provider.id;
+      assistantMessage.citations = clientCitations;
       await assistantMessage.save();
 
       await PublicRoom.updateOne(
@@ -203,7 +272,7 @@ export async function processGuestJob(job) {
       model: finalModel,
       finishReason,
       usage,
-      citations: [],
+      citations: clientCitations,
       stats: {
         queueWaitMs,
         timeToFirstTokenMs: firstTokenAt ? firstTokenAt - startedAt : null,

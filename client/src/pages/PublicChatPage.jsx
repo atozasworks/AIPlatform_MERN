@@ -13,7 +13,10 @@ export default function PublicChatPage() {
   const historyError = usePublicChat((s) => s.historyError);
   const loadSessions = usePublicChat((s) => s.loadSessions);
   const loadModels = usePublicChat((s) => s.loadModels);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Desktop defaults open; mobile uses the same flag as a drawer.
+  const [sidebarOpen, setSidebarOpen] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(min-width: 768px)').matches : true,
+  );
 
   const bottomRef = useRef(null);
   const containerRef = useRef(null);
@@ -52,15 +55,20 @@ export default function PublicChatPage() {
         />
       )}
 
-      <PublicSidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <PublicSidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        onCollapse={() => setSidebarOpen(false)}
+      />
 
       <div className="relative z-10 flex min-w-0 flex-1 flex-col">
         <header className="flex flex-wrap items-center gap-3 border-b border-slate-200/70 px-4 py-3 dark:border-slate-800">
           <button
             type="button"
-            className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 md:hidden dark:text-slate-300 dark:hover:bg-slate-800"
-            onClick={() => setSidebarOpen(true)}
-            aria-label="Open chat history"
+            className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+            onClick={() => setSidebarOpen((v) => !v)}
+            aria-label={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
+            title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
           >
             <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="3" y1="6" x2="21" y2="6" />

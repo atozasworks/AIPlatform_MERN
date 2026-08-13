@@ -10,6 +10,8 @@ import {
   publicSessionListSchema,
   publicSessionCreateSchema,
   publicSessionIdSchema,
+  publicSessionUpdateSchema,
+  publicShareTokenSchema,
 } from '../../validators/publicChat.validator.js';
 import * as publicChat from '../../controllers/publicChat.controller.js';
 
@@ -20,6 +22,14 @@ import * as publicChat from '../../controllers/publicChat.controller.js';
 const router = Router();
 
 router.use(publicChatLimiter);
+
+// Read-only shared chats — no guest cookie required (link recipients may be new visitors).
+router.get(
+  '/shared/:token',
+  validate(publicShareTokenSchema),
+  publicChat.getSharedSession,
+);
+
 router.use(ensureGuestId);
 
 router.get('/models', publicChat.listModels);
@@ -28,6 +38,9 @@ router.get('/profiles', publicChat.listPromptProfiles);
 router.get('/sessions', validate(publicSessionListSchema), publicChat.listSessions);
 router.post('/sessions', validate(publicSessionCreateSchema), publicChat.createSession);
 router.get('/sessions/:id', validate(publicSessionIdSchema), publicChat.getSession);
+router.patch('/sessions/:id', validate(publicSessionUpdateSchema), publicChat.updateSession);
+router.post('/sessions/:id/share', validate(publicSessionIdSchema), publicChat.shareSession);
+router.delete('/sessions/:id/share', validate(publicSessionIdSchema), publicChat.unshareSession);
 router.delete('/sessions/:id', validate(publicSessionIdSchema), publicChat.deleteSession);
 router.post(
   '/sessions/:id/stream',

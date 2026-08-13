@@ -16,7 +16,9 @@ export default function ChatPage() {
   const conversations = useChat((s) => s.conversations);
   const user = useAuth((s) => s.user);
   const resumeActiveGeneration = useChat((s) => s.resumeActiveGeneration);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia('(min-width: 768px)').matches : true,
+  );
   const isNewChat = messages.length === 0;
   const userId = user?.id || user?._id;
 
@@ -52,7 +54,11 @@ export default function ChatPage() {
         />
       )}
 
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <Sidebar
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        onCollapse={() => setSidebarOpen(false)}
+      />
 
       <main className="relative flex min-w-0 flex-1 flex-col bg-slate-50 dark:bg-slate-950">
         {/* Decorative background blobs */}

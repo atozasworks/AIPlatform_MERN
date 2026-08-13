@@ -37,6 +37,9 @@ const conversationSchema = new Schema(
     archived: { type: Boolean, default: false },
     temporary: { type: Boolean, default: false },
 
+    /** Opaque token for read-only shared links; null until the owner shares. */
+    shareToken: { type: String, default: null, index: true, sparse: true },
+
     tokenUsage: { type: tokenUsageSchema, default: () => ({}) },
     costEstimate: { type: Number, default: 0 },
 

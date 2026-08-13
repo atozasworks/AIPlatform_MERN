@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { customAlphabet } from 'nanoid';
 
 import { Conversation } from '../models/Conversation.js';
@@ -163,13 +164,13 @@ export async function getOwnedConversation(userId, conversationId) {
 export async function listConversations(userId, { search, archived, cursor, limit = 25 } = {}) {
   const query = { user: userId, deletedAt: null };
   if (archived === 'true') query.archived = true;
-  else if (archived === 'false') query.archived = false;
+  else if (archived === 'false') query.archived = { $ne: true };
   if (search) query.$text = { $search: search };
   // Cursor = lastMessageAt ISO string of the last item from the previous page.
   if (cursor) query.lastMessageAt = { $lt: new Date(cursor) };
 
   const items = await Conversation.find(query)
-    .sort({ lastMessageAt: -1 })
+    .sort({ pinned: -1, lastMessageAt: -1 })
     .limit(limit + 1)
     .lean();
 
@@ -191,6 +192,7 @@ export async function getMessages(userId, conversationId) {
 export async function updateConversation(userId, conversationId, patch) {
   const convo = await getOwnedConversation(userId, conversationId);
   Object.assign(convo, patch);
+  if (patch.archived === true) convo.pinned = false;
   await convo.save();
   return convo;
 }
@@ -204,6 +206,69 @@ export async function softDeleteConversation(userId, conversationId) {
     { deletedAt: new Date() },
   );
   return convo;
+}
+
+/** Creates (or returns) a read-only share token for an owned conversation. */
+export async function enableConversationShare(userId, conversationId) {
+  const convo = await getOwnedConversation(userId, conversationId);
+  if (!convo.shareToken) {
+    convo.shareToken = crypto.randomBytes(24).toString('hex');
+    await convo.save();
+  }
+  return convo;
+}
+
+export async function disableConversationShare(userId, conversationId) {
+  const convo = await getOwnedConversation(userId, conversationId);
+  convo.shareToken = null;
+  await convo.save();
+  return convo;
+}
+
+/**
+ * Public read of a shared conversation (no auth). Private messages are omitted.
+ */
+export async function getSharedConversation(token) {
+  const shareToken = String(token || '').trim();
+  if (!/^[a-f0-9]{32,64}$/i.test(shareToken)) {
+    throw AppError.notFound('Shared chat not found');
+  }
+  const convo = await Conversation.findOne({
+    shareToken,
+    deletedAt: null,
+  }).lean();
+  if (!convo) throw AppError.notFound('Shared chat not found');
+
+  const msgs = await Message.find({
+    conversation: convo._id,
+    deletedAt: null,
+    isPrivate: { $ne: true },
+    role: { $in: ['user', 'assistant'] },
+    status: { $nin: ['pending', 'streaming', 'error'] },
+  })
+    .sort({ createdAt: 1 })
+    .select('role content status createdAt')
+    .lean();
+
+  const messages = msgs
+    .filter((m) => m.role === 'user' || (m.content && String(m.content).trim()))
+    .map((m) => ({
+      id: String(m._id),
+      role: m.role,
+      content: m.content || '',
+      status: m.status || 'complete',
+      createdAt: m.createdAt,
+    }));
+
+  return {
+    session: {
+      id: String(convo._id),
+      title: convo.title,
+      createdAt: convo.createdAt,
+      lastMessageAt: convo.lastMessageAt,
+    },
+    messages,
+  };
 }
 
 /**

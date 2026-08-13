@@ -18,8 +18,9 @@ export default function ChatHeader({ onToggleSidebar }) {
     <header className="flex items-center gap-3 px-4 py-3">
       <button
         onClick={onToggleSidebar}
-        className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 dark:hover:bg-slate-800 md:hidden"
+        className="rounded-lg p-2 text-slate-500 transition hover:bg-slate-100 dark:hover:bg-slate-800"
         aria-label="Toggle sidebar"
+        title="Toggle sidebar"
       >
         <svg
           className="h-5 w-5"

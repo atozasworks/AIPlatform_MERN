@@ -26,10 +26,15 @@ import {
   listGuestSessions,
   getOwnedGuestSession,
   softDeleteGuestSession,
+  updateGuestSession,
+  enableGuestShare,
+  disableGuestShare,
+  getSharedGuestSession,
   listPublicMessages,
   maybeTitleGuestSession,
   withPublicId,
 } from '../services/publicChat.service.js';
+import { getSharedConversation } from '../services/conversation.service.js';
 
 /** Guest admission key — IP-scoped so anonymous traffic cannot share a user quota. */
 function guestKey(req) {
@@ -84,6 +89,7 @@ export const listSessions = asyncHandler(async (req, res) => {
   const sessions = await listGuestSessions(req.guestId, {
     q: req.query.q,
     limit: req.query.limit,
+    archived: req.query.archived,
   });
   return sendSuccess(res, { sessions });
 });
@@ -110,6 +116,44 @@ export const getSession = asyncHandler(async (req, res) => {
     session: withPublicId(room.toObject ? room.toObject() : room),
     messages,
   });
+});
+
+/** PATCH /public/sessions/:id — rename / pin / archive. */
+export const updateSession = asyncHandler(async (req, res) => {
+  const room = await updateGuestSession(req.guestId, req.params.id, req.body);
+  return sendSuccess(res, {
+    session: withPublicId(room.toObject ? room.toObject() : room),
+  });
+});
+
+/** POST /public/sessions/:id/share — create (or reuse) a read-only share link. */
+export const shareSession = asyncHandler(async (req, res) => {
+  const room = await enableGuestShare(req.guestId, req.params.id);
+  return sendSuccess(res, {
+    session: withPublicId(room.toObject ? room.toObject() : room),
+    shareToken: room.shareToken,
+  });
+});
+
+/** DELETE /public/sessions/:id/share — revoke the share link. */
+export const unshareSession = asyncHandler(async (req, res) => {
+  const room = await disableGuestShare(req.guestId, req.params.id);
+  return sendSuccess(res, {
+    session: withPublicId(room.toObject ? room.toObject() : room),
+  });
+});
+
+/** GET /public/shared/:token — read-only shared chat (guest or signed-in). */
+export const getSharedSession = asyncHandler(async (req, res) => {
+  const token = req.params.token;
+  try {
+    const data = await getSharedGuestSession(token);
+    return sendSuccess(res, data);
+  } catch (guestErr) {
+    if (guestErr.statusCode !== 404) throw guestErr;
+  }
+  const data = await getSharedConversation(token);
+  return sendSuccess(res, data);
 });
 
 /** DELETE /public/sessions/:id */

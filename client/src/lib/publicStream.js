@@ -125,6 +125,9 @@ function dispatch({ event, data }, state, handlers) {
     case 'started':
       handlers.onStarted?.(data);
       break;
+    case 'citation':
+      handlers.onCitation?.(data);
+      break;
     case 'token':
       handlers.onToken?.(data.text);
       break;

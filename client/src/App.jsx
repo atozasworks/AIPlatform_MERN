@@ -4,6 +4,7 @@ import { useAuth } from './store/auth.js';
 import LoginPage from './pages/LoginPage.jsx';
 import ChatPage from './pages/ChatPage.jsx';
 import PublicChatPage from './pages/PublicChatPage.jsx';
+import SharedChatPage from './pages/SharedChatPage.jsx';
 import Spinner from './components/ui/Spinner.jsx';
 
 function ProtectedRoute({ children }) {
@@ -68,6 +69,7 @@ export default function App() {
           </PublicOnlyRoute>
         }
       />
+      <Route path="/share/:token" element={<SharedChatPage />} />
       <Route path="/" element={<HomeRoute />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

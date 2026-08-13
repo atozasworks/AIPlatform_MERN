@@ -50,6 +50,7 @@ export const useChat = create((set, get) => ({
    * getter into a stale value on the first update.
    */
   isStreaming: false,
+  showArchived: false,
   _stream: null,
 
   _syncPath(allMessages, branchChoices) {
@@ -99,9 +100,40 @@ export const useChat = create((set, get) => ({
     }
   },
 
-  async loadConversations() {
-    const { conversations } = await api.get('/conversations?limit=50');
-    set({ conversations });
+  async loadConversations({ archived } = {}) {
+    const showArchived = archived !== undefined ? archived : get().showArchived;
+    const params = new URLSearchParams({ limit: '50' });
+    params.set('archived', showArchived ? 'true' : 'false');
+    const { conversations } = await api.get(`/conversations?${params.toString()}`);
+    set({ conversations, showArchived: Boolean(showArchived) });
+  },
+
+  setShowArchived(showArchived) {
+    set({ showArchived: Boolean(showArchived) });
+  },
+
+  async updateConversation(id, patch) {
+    const { conversation } = await api.patch(`/conversations/${id}`, patch);
+    const archivedView = get().showArchived;
+    if (typeof patch.archived === 'boolean' && patch.archived !== archivedView) {
+      set((s) => ({
+        conversations: s.conversations.filter((c) => c.id !== id),
+        ...(s.activeId === id
+          ? { activeId: null, allMessages: [], branchChoices: {}, messages: [] }
+          : {}),
+      }));
+      return conversation;
+    }
+    set((s) => {
+      const conversations = s.conversations
+        .map((c) => (c.id === id ? { ...c, ...conversation } : c))
+        .sort((a, b) => {
+          if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
+          return new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0);
+        });
+      return { conversations };
+    });
+    return conversation;
   },
 
   /**
@@ -203,6 +235,24 @@ export const useChat = create((set, get) => ({
         ? { activeId: null, allMessages: [], branchChoices: {}, messages: [] }
         : {}),
     }));
+  },
+
+  async shareConversation(id) {
+    const { shareToken, conversation } = await api.post(`/conversations/${id}/share`, {});
+    if (conversation) {
+      set((s) => ({
+        conversations: s.conversations.map((c) =>
+          c.id === id ? { ...c, ...conversation } : c,
+        ),
+      }));
+    }
+    const url = `${window.location.origin}/share/${shareToken}`;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      /* UI still shows the URL */
+    }
+    return { shareToken, url };
   },
 
   setProvider(provider, model) {

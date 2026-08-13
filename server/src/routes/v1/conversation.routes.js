@@ -37,6 +37,8 @@ router.post(
   conversationController.makeMessagePrivate,
 );
 router.patch('/:id', validate(updateConversationSchema), conversationController.update);
+router.post('/:id/share', validate(conversationIdSchema), conversationController.share);
+router.delete('/:id/share', validate(conversationIdSchema), conversationController.unshare);
 router.delete('/:id', validate(conversationIdSchema), conversationController.remove);
 
 // Streaming chat lives under the conversation it belongs to.

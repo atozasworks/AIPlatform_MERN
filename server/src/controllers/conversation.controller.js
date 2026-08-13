@@ -7,6 +7,8 @@ import {
   getMessages,
   updateConversation,
   softDeleteConversation,
+  enableConversationShare,
+  disableConversationShare,
   prepareMessageEdit,
   setMessagePrivate,
 } from '../services/conversation.service.js';
@@ -43,6 +45,21 @@ export const update = asyncHandler(async (req, res) => {
 export const remove = asyncHandler(async (req, res) => {
   await softDeleteConversation(req.user._id, req.params.id);
   return sendSuccess(res, { ok: true });
+});
+
+/** POST /conversations/:id/share — create (or reuse) a read-only share link. */
+export const share = asyncHandler(async (req, res) => {
+  const convo = await enableConversationShare(req.user._id, req.params.id);
+  return sendSuccess(res, {
+    conversation: convo.toJSON(),
+    shareToken: convo.shareToken,
+  });
+});
+
+/** DELETE /conversations/:id/share — revoke the share link. */
+export const unshare = asyncHandler(async (req, res) => {
+  const convo = await disableConversationShare(req.user._id, req.params.id);
+  return sendSuccess(res, { conversation: convo.toJSON() });
 });
 
 /** Returns parentMessageId so the client can open a sibling edit branch. */

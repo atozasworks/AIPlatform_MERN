@@ -1,4 +1,5 @@
 import Markdown from '../chat/Markdown.jsx';
+import Citations from '../chat/Citations.jsx';
 
 /**
  * Simplified bubble for pre-login chat — no edit / branch controls (those
@@ -35,6 +36,7 @@ export default function PublicMessageBubble({ message }) {
         {message.status === 'error' && message.content ? (
           <p className="mt-2 text-xs text-red-500">{message.error}</p>
         ) : null}
+        {message.citations?.length ? <Citations citations={message.citations} /> : null}
       </div>
     </div>
   );
