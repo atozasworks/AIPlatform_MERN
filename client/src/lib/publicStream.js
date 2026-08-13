@@ -1,5 +1,5 @@
 /**
- * SSE client for the pre-login shared public chat.
+ * SSE client for pre-login guest chat sessions.
  * Mirrors the authenticated stream protocol but hits /api/v1/public/* only.
  */
 
@@ -62,10 +62,12 @@ function createStreamer(startUrl, cancelUrlForJob) {
   };
 }
 
-export const streamPublicChat = createStreamer(
-  `${BASE}/room/stream`,
-  (jobId) => `${BASE}/stream/${jobId}/cancel`,
-);
+export function streamPublicChat(sessionId, payload, handlers = {}) {
+  return createStreamer(
+    `${BASE}/sessions/${sessionId}/stream`,
+    (jobId) => `${BASE}/stream/${jobId}/cancel`,
+  )(payload, handlers);
+}
 
 async function consume(body, state, handlers) {
   const reader = body.getReader();
@@ -145,3 +147,5 @@ function dispatch({ event, data }, state, handlers) {
       break;
   }
 }
+
+export default streamPublicChat;

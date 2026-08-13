@@ -16,10 +16,16 @@ export default function Sidebar({ open, onClose }) {
   const [logoutOpen, setLogoutOpen] = useState(false);
 
   const filtered = useMemo(() => {
+    // Hide empty drafts left over from older clients (title stays "New chat"
+    // until the first real turn). Always keep the active one visible while it
+    // streams and before the auto-title arrives.
+    const withMessages = conversations.filter(
+      (c) => c.id === activeId || String(c.title || '').trim() !== 'New chat',
+    );
     const q = query.trim().toLowerCase();
-    if (!q) return conversations;
-    return conversations.filter((c) => c.title?.toLowerCase().includes(q));
-  }, [conversations, query]);
+    if (!q) return withMessages;
+    return withMessages.filter((c) => c.title?.toLowerCase().includes(q));
+  }, [conversations, query, activeId]);
 
   const handleNew = async () => {
     await newConversation();

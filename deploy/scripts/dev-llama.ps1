@@ -32,9 +32,12 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$LlamaDir   = "$PSScriptRoot\..\..\.llamacpp-cpu",
-    [string]$ModelDir   = "$PSScriptRoot\..\..\models",
-    [string]$Preset     = "$PSScriptRoot\..\llama\models.ini",
+    # Defaults are filled below — $PSScriptRoot is empty while param() defaults
+    # are evaluated (PowerShell quirk), which produced paths like
+    # C:\..\..\.llamacpp-cpu and broke Test-Path.
+    [string]$LlamaDir   = '',
+    [string]$ModelDir   = '',
+    [string]$Preset     = '',
     [string]$EmbedModel = "Qwen3-Embedding-0.6B-Q8_0.gguf",
     [int]$ChatPort      = 8081,
     [int]$EmbedPort     = 8082,
@@ -42,7 +45,10 @@ param(
     [int]$ContextSize   = 8192,
     [int]$Parallel      = 2,
     [int]$MaxLoaded     = 1,
-    [switch]$Embeddings
+    [switch]$Embeddings,
+    # Kill any llama-server already holding the chat/embedding ports and start
+    # fresh. Use this to recover from an orphaned server left by a previous run.
+    [switch]$Restart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,13 +57,29 @@ function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Write-Warn($msg) { Write-Host "[!] $msg" -ForegroundColor Yellow }
 function Write-Bad($msg)  { Write-Host "[x] $msg" -ForegroundColor Red }
 
+# Script dir is reliable here; param defaults are not.
+$scriptDir = if ($PSScriptRoot) {
+    $PSScriptRoot
+} else {
+    Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..'))
+
+if (-not $LlamaDir) { $LlamaDir = Join-Path $repoRoot '.llamacpp-cpu' }
+if (-not $ModelDir) { $ModelDir = Join-Path $repoRoot 'models' }
+if (-not $Preset)   { $Preset   = Join-Path $repoRoot 'deploy\llama\models.ini' }
+
+$LlamaDir = [System.IO.Path]::GetFullPath($LlamaDir)
+$ModelDir = [System.IO.Path]::GetFullPath($ModelDir)
+$Preset   = [System.IO.Path]::GetFullPath($Preset)
+
 # Leave a couple of cores for the OS, Node and MongoDB.
 if ($Threads -le 0) {
     $Threads = [Math]::Max(2, [Environment]::ProcessorCount - 2)
 }
 
 $server = Join-Path $LlamaDir 'llama-server.exe'
-if (-not (Test-Path $server)) {
+if (-not (Test-Path -LiteralPath $server)) {
     Write-Bad "llama-server.exe not found at: $server"
     Write-Host "Download a CPU build from https://github.com/ggml-org/llama.cpp/releases"
     Write-Host "and extract it to .llamacpp-cpu\ in the repository root."
@@ -67,7 +89,7 @@ if (-not (Test-Path $server)) {
 # Regenerate the router preset so it always matches modelRegistry.js and only
 # lists models whose weights are actually on this host.
 Write-Step "Generating router preset from the model registry"
-$serverDir = Join-Path $PSScriptRoot '..\..\server'
+$serverDir = Join-Path $repoRoot 'server'
 & node (Join-Path $serverDir 'scripts\generate-llama-preset.mjs') `
     --models-dir $ModelDir --out $Preset --parallel $Parallel
 if ($LASTEXITCODE -ne 0) {
@@ -76,83 +98,141 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# Fail early with a clear message rather than letting the app get a 404 from
-# whatever else is listening.
-function Test-PortFree([int]$Port) {
+# Classifies a port: 'free' | 'llama' (a llama-server already listening) |
+# 'other' (something else — e.g. XAMPP Apache — that we must not touch).
+function Get-PortOwner([int]$Port) {
     $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-    if ($conn) {
-        $procId = ($conn | Select-Object -First 1).OwningProcess
-        $name = (Get-Process -Id $procId -ErrorAction SilentlyContinue).ProcessName
-        Write-Bad "Port $Port is already in use by '$name' (PID $procId)."
-        return $false
-    }
-    return $true
+    if (-not $conn) { return [pscustomobject]@{ State = 'free'; Pid = $null; Name = $null } }
+    $procId = ($conn | Select-Object -First 1).OwningProcess
+    $name = (Get-Process -Id $procId -ErrorAction SilentlyContinue).ProcessName
+    $state = if ($name -eq 'llama-server') { 'llama' } else { 'other' }
+    return [pscustomobject]@{ State = $state; Pid = $procId; Name = $name }
 }
 
-if (-not (Test-PortFree $ChatPort)) { exit 1 }
-if ($Embeddings -and -not (Test-PortFree $EmbedPort)) { exit 1 }
+# Frees a port when it is held by a stray llama-server (our own kind). This is
+# what makes re-running the script idempotent: an embeddings server orphaned by
+# a previous Ctrl+C no longer blocks the next start.
+function Stop-StrayLlama([int]$Port, [string]$Label) {
+    $owner = Get-PortOwner $Port
+    if ($owner.State -eq 'llama') {
+        Write-Warn "$Label port $Port held by a previous llama-server (PID $($owner.Pid)) - stopping it."
+        Stop-Process -Id $owner.Pid -Force -ErrorAction SilentlyContinue
+        for ($i = 0; $i -lt 20; $i++) {
+            if ((Get-PortOwner $Port).State -ne 'llama') { break }
+            Start-Sleep -Milliseconds 200
+        }
+    }
+}
 
-Write-Step "Starting llama-server (chat router) on 127.0.0.1:$ChatPort"
-Write-Host "    preset:  $Preset"
-Write-Host "    threads: $Threads   context: $ContextSize   parallel: $Parallel   max loaded: $MaxLoaded"
+# Processes THIS script started, so Ctrl+C / exit cleans them up instead of
+# leaking an orphan onto 8082 (the recurring "port already in use" cause).
+$owned = @()
 
-# No --model: that is what puts llama-server into router mode. Per-model paths
-# and context sizes come from the preset; everything below is a global default
-# the router passes down to each child server it spawns.
-$chatArgs = @(
-    '--models-preset', $Preset,
-    '--models-max', $MaxLoaded,
-    '--host', '127.0.0.1',
-    '--port', $ChatPort,
-    '--threads', $Threads,
-    '--threads-batch', $Threads,
-    '--cont-batching',
-    '--cache-prompt',
-    '--no-webui'
-)
+if ($Restart) {
+    Stop-StrayLlama $ChatPort 'Chat'
+    if ($Embeddings) { Stop-StrayLlama $EmbedPort 'Embeddings' }
+}
 
-$chatProc = Start-Process -FilePath $server -ArgumentList $chatArgs -PassThru -NoNewWindow
+$chatOwner = Get-PortOwner $ChatPort
+if ($chatOwner.State -eq 'other') {
+    Write-Bad "Chat port $ChatPort is in use by '$($chatOwner.Name)' (PID $($chatOwner.Pid)), not llama-server."
+    Write-Host "Stop that process, pick another -ChatPort, or re-run with -Restart if it is a stale llama-server."
+    exit 1
+}
+
+$chatProc = $null
+$reuseChat = $false
+if ($chatOwner.State -eq 'llama') {
+    Write-Warn "Reusing the llama-server already serving chat on 127.0.0.1:$ChatPort (PID $($chatOwner.Pid))."
+    $reuseChat = $true
+} else {
+    Write-Step "Starting llama-server (chat router) on 127.0.0.1:$ChatPort"
+    Write-Host "    preset:  $Preset"
+    Write-Host "    threads: $Threads   context: $ContextSize   parallel: $Parallel   max loaded: $MaxLoaded"
+
+    # No --model: that is what puts llama-server into router mode. Per-model
+    # paths and context sizes come from the preset; everything below is a global
+    # default the router passes down to each child server it spawns.
+    $chatArgs = @(
+        '--models-preset', $Preset,
+        '--models-max', $MaxLoaded,
+        '--host', '127.0.0.1',
+        '--port', $ChatPort,
+        '--threads', $Threads,
+        '--threads-batch', $Threads,
+        '--cont-batching',
+        '--cache-prompt',
+        '--no-webui'
+    )
+    $chatProc = Start-Process -FilePath $server -ArgumentList $chatArgs -PassThru -NoNewWindow
+    $owned += $chatProc
+}
 
 if ($Embeddings) {
-    $embedModelPath = Join-Path $ModelDir $EmbedModel
-    if (-not (Test-Path $embedModelPath)) {
-        Write-Warn "Embedding model not found at $embedModelPath - retrieval will be keyword-only."
+    $embedOwner = Get-PortOwner $EmbedPort
+    if ($embedOwner.State -eq 'llama') {
+        Write-Warn "Reusing the embedding server already on 127.0.0.1:$EmbedPort (PID $($embedOwner.Pid))."
+    } elseif ($embedOwner.State -eq 'other') {
+        Write-Warn "Embedding port $EmbedPort is held by '$($embedOwner.Name)' (PID $($embedOwner.Pid)) - skipping embeddings."
     } else {
-        Write-Step "Starting llama-server (embeddings) on 127.0.0.1:$EmbedPort"
-        $embedArgs = @(
-            '--model', $embedModelPath,
-            '--alias', 'qwen3-embedding-0.6b',
-            '--host', '127.0.0.1',
-            '--port', $EmbedPort,
-            '--embedding',
-            # Decoder model: the sequence is encoded into its final token, so
-            # mean pooling would flatten every vector toward a constant.
-            '--pooling', 'last',
-            '--threads', '2',
-            # Total context, split across the 4 slots: 8192 / 4 = 2048 per slot.
-            '--ctx-size', '8192',
-            '--parallel', '4',
-            '--batch-size', '2048',
-            '--ubatch-size', '2048',
-            '--no-webui'
-        )
-        Start-Process -FilePath $server -ArgumentList $embedArgs -PassThru -NoNewWindow | Out-Null
+        $embedModelPath = Join-Path $ModelDir $EmbedModel
+        if (-not (Test-Path $embedModelPath)) {
+            Write-Warn "Embedding model not found at $embedModelPath - retrieval will be keyword-only."
+        } else {
+            Write-Step "Starting llama-server (embeddings) on 127.0.0.1:$EmbedPort"
+            $embedArgs = @(
+                '--model', $embedModelPath,
+                '--alias', 'qwen3-embedding-0.6b',
+                '--host', '127.0.0.1',
+                '--port', $EmbedPort,
+                '--embedding',
+                # Decoder model: the sequence is encoded into its final token, so
+                # mean pooling would flatten every vector toward a constant.
+                '--pooling', 'last',
+                '--threads', '2',
+                # Total context, split across the 4 slots: 8192 / 4 = 2048 per slot.
+                '--ctx-size', '8192',
+                '--parallel', '4',
+                '--batch-size', '2048',
+                '--ubatch-size', '2048',
+                '--no-webui'
+            )
+            $embedProc = Start-Process -FilePath $server -ArgumentList $embedArgs -PassThru -NoNewWindow
+            $owned += $embedProc
+        }
     }
 }
 
-# The router answers as soon as it has parsed the preset; individual models are
-# only loaded on the first request that names them.
-Write-Step "Waiting for the chat router to come up"
-$healthy = $false
-for ($i = 0; $i -lt 180; $i++) {
-    try {
-        $r = Invoke-WebRequest -Uri "http://127.0.0.1:$ChatPort/v1/models" -UseBasicParsing -TimeoutSec 2
-        if ($r.StatusCode -eq 200) { $healthy = $true; break }
-    } catch { Start-Sleep -Seconds 1 }
-    if ($chatProc.HasExited) { Write-Bad "llama-server exited during startup."; exit 1 }
+# Stops only the servers this run started. Registered for the normal exit path
+# and for Ctrl+C via the engine event, so neither leaves an orphan behind.
+function Stop-OwnedServers {
+    foreach ($p in $script:owned) {
+        if ($p -and -not $p.HasExited) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
+$null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action { Stop-OwnedServers }
 
-if ($healthy) {
+try {
+    # The router answers as soon as it has parsed the preset; individual models
+    # are only loaded on the first request that names them.
+    Write-Step "Waiting for the chat router to come up"
+    $healthy = $false
+    for ($i = 0; $i -lt 180; $i++) {
+        try {
+            $r = Invoke-WebRequest -Uri "http://127.0.0.1:$ChatPort/v1/models" -UseBasicParsing -TimeoutSec 2
+            if ($r.StatusCode -eq 200) { $healthy = $true; break }
+        } catch { Start-Sleep -Seconds 1 }
+        if ($chatProc -and $chatProc.HasExited) { Write-Bad "llama-server exited during startup."; exit 1 }
+    }
+
+    if (-not $healthy) {
+        Write-Bad "Model did not load within 180 seconds."
+        Stop-OwnedServers
+        exit 1
+    }
+
     Write-Host ""
     Write-Host "llama-server router is ready." -ForegroundColor Green
     Write-Host "  chat:      http://127.0.0.1:$ChatPort/v1"
@@ -164,14 +244,22 @@ if ($healthy) {
         foreach ($m in $catalog.data) { Write-Host "  - $($m.id)" }
     } catch { Write-Warn "Could not read the model catalogue." }
     Write-Host ""
+
+    if ($owned.Count -eq 0) {
+        Write-Host "Everything was already running - nothing to keep open. Servers keep running in the background." -ForegroundColor Green
+        Write-Host "Stop them with: .\deploy\scripts\dev-llama.ps1 -Restart   (or Get-Process llama-server | Stop-Process)"
+        exit 0
+    }
+
     Write-Host "Now start the application in two more terminals:"
     Write-Host "  cd server; npm run dev"
     Write-Host "  cd server; npm run dev:worker"
     Write-Host ""
-    Write-Host "Press Ctrl+C to stop llama-server."
-    Wait-Process -Id $chatProc.Id
-} else {
-    Write-Bad "Model did not load within 180 seconds."
-    Stop-Process -Id $chatProc.Id -Force -ErrorAction SilentlyContinue
-    exit 1
+    Write-Host "Press Ctrl+C to stop the llama-server(s) this script started."
+
+    # Wait on whatever we started (chat if we launched it, else the embed proc).
+    $waitId = if ($chatProc) { $chatProc.Id } else { $owned[0].Id }
+    Wait-Process -Id $waitId
+} finally {
+    Stop-OwnedServers
 }

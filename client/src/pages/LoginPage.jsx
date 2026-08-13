@@ -67,7 +67,7 @@ function LoginInner() {
 
       <p className="mt-6 text-center text-sm text-slate-500">
         <Link to="/" className="font-medium text-brand-600 hover:underline dark:text-brand-400">
-          Continue to public chat without signing in
+          Continue as guest without signing in
         </Link>
       </p>
     </AuthLayout>

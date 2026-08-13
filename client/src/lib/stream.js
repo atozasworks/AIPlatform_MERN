@@ -17,7 +17,25 @@
  *    fetch is aborted only after the cancel request is dispatched.
  */
 
+import { tryRefresh } from './api.js';
+
 const BASE = '/api/v1';
+
+/**
+ * Runs a fetch and, on a 401, refreshes the access token once and retries.
+ *
+ * The SSE endpoints are hit with raw fetch (EventSource cannot POST a body or
+ * carry these headers), so they bypass the api.js interceptor. Without this a
+ * short-lived access token that expires between turns surfaces as a mid-chat
+ * "Authentication required" even though the user is still logged in.
+ */
+async function fetchWithRefresh(url, init) {
+  const res = await fetch(url, init);
+  if (res.status !== 401) return res;
+  const refreshed = await tryRefresh();
+  if (!refreshed) return res;
+  return fetch(url, init);
+}
 
 export function streamChat(conversationId, payload, handlers = {}) {
   const controller = new AbortController();
@@ -25,7 +43,7 @@ export function streamChat(conversationId, payload, handlers = {}) {
 
   const run = async () => {
     try {
-      const res = await fetch(`${BASE}/conversations/${conversationId}/stream`, {
+      const res = await fetchWithRefresh(`${BASE}/conversations/${conversationId}/stream`, {
         method: 'POST',
         credentials: 'include',
         headers: {
@@ -88,7 +106,7 @@ export function resumeStream(conversationId, jobId, { lastSeq = 0 } = {}, handle
 
   (async () => {
     try {
-      const res = await fetch(
+      const res = await fetchWithRefresh(
         `${BASE}/conversations/${conversationId}/stream/${jobId}?lastSeq=${lastSeq}`,
         { credentials: 'include', headers: { 'X-No-Compression': '1' }, signal: controller.signal },
       );

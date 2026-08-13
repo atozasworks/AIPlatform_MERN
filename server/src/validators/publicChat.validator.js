@@ -12,7 +12,34 @@ const historyMessage = z.object({
   content: z.string().trim().min(1).max(24000),
 });
 
+const objectId = z
+  .string()
+  .trim()
+  .regex(/^[a-fA-F0-9]{24}$/, 'Invalid session id');
+
+export const publicSessionListSchema = {
+  query: z.object({
+    q: z.string().trim().max(200).optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+  }),
+};
+
+export const publicSessionCreateSchema = {
+  body: z
+    .object({
+      profile: z.enum(PROFILE_IDS).optional(),
+      provider: z.string().trim().max(32).optional(),
+      model: z.string().trim().max(128).optional(),
+    })
+    .default({}),
+};
+
+export const publicSessionIdSchema = {
+  params: z.object({ id: objectId }),
+};
+
 export const publicRoomStreamSchema = {
+  params: z.object({ id: objectId }),
   body: z.object({
     content: z.string().trim().min(1, 'Message cannot be empty').max(8000),
     profile: z.enum(PROFILE_IDS).optional(),

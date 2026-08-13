@@ -45,7 +45,7 @@ export default function ChatHeader({ onToggleSidebar }) {
             title="Time-sensitive questions are answered from freshly retrieved web sources, with citations and retrieval dates."
             className="flex-none rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-400 dark:ring-emerald-900"
           >
-            Live web
+            Web Search Enabled
           </span>
         )}
       </div>

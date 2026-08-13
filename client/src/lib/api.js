@@ -34,7 +34,12 @@ async function request(path, { method = 'GET', body, headers = {}, _retried = fa
   return data.data;
 }
 
-async function tryRefresh() {
+/**
+ * Single-flight access-token refresh. Concurrent 401s (e.g. a REST call and an
+ * SSE stream at once) share one `/auth/refresh` round trip. Exported so the SSE
+ * client in `stream.js` reuses the exact same de-duplicated refresh.
+ */
+export function tryRefresh() {
   if (!refreshing) {
     refreshing = fetch(`${BASE}/auth/refresh`, { method: 'POST', credentials: 'include' })
       .then((r) => r.ok)

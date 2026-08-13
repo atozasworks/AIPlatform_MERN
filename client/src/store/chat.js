@@ -122,21 +122,36 @@ export const useChat = create((set, get) => ({
     }
   },
 
+  /**
+   * Opens a blank draft canvas. Does NOT create a server conversation — that
+   * happens on the first send so empty "New chat" shells never clutter history.
+   */
   async newConversation() {
     await get()._stopActiveGeneration();
+    set({
+      activeId: null,
+      allMessages: [],
+      branchChoices: {},
+      messages: [],
+    });
+    return null;
+  },
+
+  /** Persist a conversation the first time the user actually sends a message. */
+  async _ensureConversation() {
+    let activeId = get().activeId;
+    if (activeId) return activeId;
+
     const { conversation } = await api.post('/conversations', {
       provider: get().selectedProvider,
       model: get().selectedModel || undefined,
       profile: get().selectedProfile,
     });
     set((s) => ({
-      conversations: [conversation, ...s.conversations],
+      conversations: [conversation, ...s.conversations.filter((c) => c.id !== conversation.id)],
       activeId: conversation.id,
-      allMessages: [],
-      branchChoices: {},
-      messages: [],
     }));
-    return conversation;
+    return conversation.id;
   },
 
   async openConversation(id) {
@@ -281,11 +296,7 @@ export const useChat = create((set, get) => ({
       }
     }
 
-    let activeId = get().activeId;
-    if (!activeId) {
-      const convo = await get().newConversation();
-      activeId = convo.id;
-    }
+    const activeId = await get()._ensureConversation();
 
     const clientMessageId = crypto.randomUUID();
     let userId = `tmp-user-${clientMessageId}`;

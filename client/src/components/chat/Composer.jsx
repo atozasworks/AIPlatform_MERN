@@ -37,7 +37,7 @@ export default function Composer() {
   };
 
   return (
-    <div className="px-4 pb-4 pt-2">
+    <div className="px-4 pb-2 pt-2">
       <QueueStatus />
       <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-3xl border border-slate-200 bg-white p-2 pl-4 shadow-lg shadow-slate-200/50 transition focus-within:border-violet-400 dark:border-slate-700 dark:bg-slate-900 dark:shadow-black/20">
         <button
@@ -64,7 +64,7 @@ export default function Composer() {
           onChange={onInput}
           onKeyDown={onKeyDown}
           rows={1}
-          placeholder="Message AiChat…"
+          placeholder="Ask me anything, I'm here to help you with answers, ideas, and more."
           className="max-h-52 flex-1 resize-none self-center bg-transparent py-2 outline-none"
         />
         <button
@@ -120,9 +120,6 @@ export default function Composer() {
           </button>
         )}
       </div>
-      <p className="mx-auto mt-2 max-w-3xl text-center text-xs text-slate-400">
-        ATOZAS AI runs on ATOZAS servers. It can make mistakes — verify important information.
-      </p>
     </div>
   );
 }

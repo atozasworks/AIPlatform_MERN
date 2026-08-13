@@ -3,11 +3,8 @@ import { api } from '../lib/api.js';
 import { streamPublicChat } from '../lib/publicStream.js';
 
 /**
- * Pre-login chat store. Completely separate from `useChat` so authenticated
- * conversations, branching, and resume logic stay untouched.
- *
- * There is a single shared public room: every message is persisted and visible
- * to every visitor. (The former Public/Private mode toggle has been removed.)
+ * Pre-login guest chat store. Sessions belong to this browser's guest cookie —
+ * visitors do not share one global thread.
  */
 
 export const PHASE = {
@@ -26,9 +23,24 @@ const emptyGeneration = {
   notice: null,
 };
 
+function mapMessage(m) {
+  return {
+    id: m.id,
+    role: m.role,
+    content: m.content || '',
+    status: m.status || 'complete',
+    model: m.model,
+    provider: m.provider,
+    createdAt: m.createdAt,
+    error: m.error,
+  };
+}
+
 export const usePublicChat = create((set, get) => ({
   messages: [],
-  room: null,
+  sessions: [],
+  activeId: null,
+  session: null,
   selectedProvider: 'llamacpp',
   selectedModel: '',
   selectedProfile: 'balanced',
@@ -36,6 +48,7 @@ export const usePublicChat = create((set, get) => ({
   isStreaming: false,
   loadingHistory: true,
   historyError: null,
+  searchQuery: '',
   _stream: null,
 
   _setGeneration(patch) {
@@ -47,6 +60,10 @@ export const usePublicChat = create((set, get) => ({
 
   _endGeneration(notice = null) {
     set({ generation: { ...emptyGeneration, notice }, isStreaming: false, _stream: null });
+  },
+
+  setSearchQuery(searchQuery) {
+    set({ searchQuery });
   },
 
   async loadModels() {
@@ -66,29 +83,95 @@ export const usePublicChat = create((set, get) => ({
     }
   },
 
-  async loadPublicHistory() {
+  async loadSessions(q) {
+    const query = q !== undefined ? q : get().searchQuery;
     set({ loadingHistory: true, historyError: null });
     try {
-      const { room, messages } = await api.get('/public/room');
+      const qs = query?.trim() ? `?q=${encodeURIComponent(query.trim())}` : '';
+      const { sessions } = await api.get(`/public/sessions${qs}`);
+      set({ sessions: sessions || [], loadingHistory: false });
+    } catch (err) {
       set({
-        room,
-        messages: (messages || []).map((m) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content || '',
-          status: m.status || 'complete',
-          model: m.model,
-          provider: m.provider,
-          createdAt: m.createdAt,
-        })),
+        loadingHistory: false,
+        historyError: err.message || 'Could not load chat history.',
+      });
+    }
+  },
+
+  async newSession() {
+    const stream = get()._stream;
+    if (stream) {
+      try {
+        await stream.cancel();
+      } catch {
+        /* ignore */
+      }
+    }
+    get()._endGeneration();
+    set({
+      activeId: null,
+      session: null,
+      messages: [],
+    });
+  },
+
+  async openSession(id) {
+    if (!id) return;
+    const stream = get()._stream;
+    if (stream) {
+      try {
+        await stream.cancel();
+      } catch {
+        /* ignore */
+      }
+    }
+    get()._endGeneration();
+    set({ loadingHistory: true, historyError: null, activeId: id, messages: [] });
+    try {
+      const { session, messages } = await api.get(`/public/sessions/${id}`);
+      if (get().activeId !== id) return;
+      set({
+        session,
+        activeId: session.id,
+        messages: (messages || []).map(mapMessage),
         loadingHistory: false,
       });
     } catch (err) {
       set({
         loadingHistory: false,
-        historyError: err.message || 'Could not load public chat history.',
+        historyError: err.message || 'Could not open chat.',
+        activeId: null,
+        session: null,
+        messages: [],
       });
     }
+  },
+
+  async deleteSession(id) {
+    await api.delete(`/public/sessions/${id}`);
+    set((s) => ({
+      sessions: s.sessions.filter((c) => c.id !== id),
+      ...(s.activeId === id
+        ? { activeId: null, session: null, messages: [] }
+        : {}),
+    }));
+  },
+
+  async _ensureSession() {
+    let activeId = get().activeId;
+    if (activeId) return activeId;
+
+    const { session } = await api.post('/public/sessions', {
+      provider: get().selectedProvider,
+      model: get().selectedModel || undefined,
+      profile: get().selectedProfile,
+    });
+    set((s) => ({
+      session,
+      activeId: session.id,
+      sessions: [session, ...s.sessions.filter((c) => c.id !== session.id)],
+    }));
+    return session.id;
   },
 
   async stopStreaming() {
@@ -104,6 +187,8 @@ export const usePublicChat = create((set, get) => ({
   async sendMessage(text) {
     const content = text.trim();
     if (!content || get().generation.phase !== PHASE.IDLE) return;
+
+    const activeId = await get()._ensureSession();
 
     const clientMessageId = crypto.randomUUID();
     let userId = `tmp-user-${clientMessageId}`;
@@ -159,6 +244,24 @@ export const usePublicChat = create((set, get) => ({
         }
 
         if (meta.jobId) get()._setGeneration({ jobId: meta.jobId });
+
+        if (meta.title || meta.sessionId) {
+          set((s) => ({
+            sessions: s.sessions.map((c) =>
+              c.id === (meta.sessionId || activeId)
+                ? {
+                    ...c,
+                    title: meta.title || c.title,
+                    lastMessageAt: new Date().toISOString(),
+                  }
+                : c,
+            ),
+            session:
+              s.session && s.session.id === (meta.sessionId || activeId)
+                ? { ...s.session, title: meta.title || s.session.title }
+                : s.session,
+          }));
+        }
       },
 
       onQueued: (data) =>
@@ -187,6 +290,8 @@ export const usePublicChat = create((set, get) => ({
           status: 'complete',
           model: data.model,
         });
+        // Ensure the session appears in history after the first real turn.
+        get().loadSessions();
         get()._endGeneration(
           data.truncatedInput
             ? 'Your message was long, so the earlier part was trimmed to fit the model context.'
@@ -228,7 +333,7 @@ export const usePublicChat = create((set, get) => ({
       clientMessageId,
     };
 
-    const stream = streamPublicChat(payload, handlers);
+    const stream = streamPublicChat(activeId, payload, handlers);
     set({ _stream: stream });
   },
 }));

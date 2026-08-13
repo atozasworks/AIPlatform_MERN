@@ -51,7 +51,7 @@ export default function PublicComposer() {
           onChange={onInput}
           onKeyDown={onKeyDown}
           rows={1}
-          placeholder="Message AtozAS AI…"
+          placeholder="Ask anything....."
           className="max-h-52 flex-1 resize-none self-center bg-transparent py-2 outline-none"
         />
         {isStreaming ? (
@@ -88,10 +88,6 @@ export default function PublicComposer() {
           </button>
         )}
       </div>
-      <p className="mx-auto mt-2 max-w-3xl text-center text-xs text-slate-400">
-        This is a public chat visible to everyone. Sign in anytime to start your own private
-        conversations.
-      </p>
     </div>
   );
 }

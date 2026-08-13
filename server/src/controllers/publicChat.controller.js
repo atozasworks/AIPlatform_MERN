@@ -22,8 +22,12 @@ import { increment, METRIC } from '../services/health/metrics.js';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import {
-  getOrCreatePublicRoom,
+  createGuestSession,
+  listGuestSessions,
+  getOwnedGuestSession,
+  softDeleteGuestSession,
   listPublicMessages,
+  maybeTitleGuestSession,
   withPublicId,
 } from '../services/publicChat.service.js';
 
@@ -75,26 +79,48 @@ export const listPromptProfiles = asyncHandler(async (_req, res) =>
   }),
 );
 
-/** GET /public/room — singleton shared room + recent messages. */
-export const getRoom = asyncHandler(async (_req, res) => {
-  const room = await getOrCreatePublicRoom();
+/** GET /public/sessions — this guest's chat history (optional ?q= title search). */
+export const listSessions = asyncHandler(async (req, res) => {
+  const sessions = await listGuestSessions(req.guestId, {
+    q: req.query.q,
+    limit: req.query.limit,
+  });
+  return sendSuccess(res, { sessions });
+});
+
+/** POST /public/sessions — open a new empty session for this guest. */
+export const createSession = asyncHandler(async (req, res) => {
+  const room = await createGuestSession(req.guestId, {
+    profile: req.body?.profile,
+    provider: req.body?.provider,
+    model: req.body?.model,
+  });
+  return sendSuccess(
+    res,
+    { session: withPublicId(room.toObject ? room.toObject() : room) },
+    { status: 201 },
+  );
+});
+
+/** GET /public/sessions/:id — owned session + messages. */
+export const getSession = asyncHandler(async (req, res) => {
+  const room = await getOwnedGuestSession(req.guestId, req.params.id);
   const messages = await listPublicMessages(room._id);
   return sendSuccess(res, {
-    room: withPublicId(room.toObject ? room.toObject() : room),
+    session: withPublicId(room.toObject ? room.toObject() : room),
     messages,
   });
 });
 
-/** GET /public/room/messages */
-export const getMessages = asyncHandler(async (_req, res) => {
-  const room = await getOrCreatePublicRoom();
-  const messages = await listPublicMessages(room._id);
-  return sendSuccess(res, { messages });
+/** DELETE /public/sessions/:id */
+export const deleteSession = asyncHandler(async (req, res) => {
+  await softDeleteGuestSession(req.guestId, req.params.id);
+  return sendSuccess(res, { ok: true });
 });
 
 /**
- * POST /public/room/stream
- * Public Mode: persists turns so every visitor sees the shared history.
+ * POST /public/sessions/:id/stream
+ * Persists turns into the guest's own session — never into a shared global room.
  */
 export const streamPublic = asyncHandler(async (req, res) => {
   const {
@@ -108,7 +134,7 @@ export const streamPublic = asyncHandler(async (req, res) => {
 
   await assertInferenceReady();
 
-  const room = await getOrCreatePublicRoom();
+  const room = await getOwnedGuestSession(req.guestId, req.params.id);
   const profile = resolveGuestProfile(requestedProfile);
   const { provider, model } = aiGateway.resolve({
     provider: requestedProvider || room.provider || undefined,
@@ -179,6 +205,8 @@ export const streamPublic = asyncHandler(async (req, res) => {
       });
     }
 
+    const sessionTitle = await maybeTitleGuestSession(room, content);
+
     assistantMessage = await PublicMessage.findOne({
       room: room._id,
       role: 'assistant',
@@ -224,6 +252,8 @@ export const streamPublic = asyncHandler(async (req, res) => {
       profile: profile.id,
       userMessageId: String(userMessage._id),
       assistantMessageId: String(assistantMessage._id),
+      sessionId: String(room._id),
+      title: sessionTitle || room.title,
     });
 
     channel.send('queued', {
