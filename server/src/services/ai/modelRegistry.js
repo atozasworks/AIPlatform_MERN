@@ -46,7 +46,7 @@ import { env } from '../../config/env.js';
  */
 
 /**
- * Context budget for the chat model. Qwen3-4B is natively 32k-capable, but the
+ * Context budget for the chat model. Qwen3-14B is natively 32k-capable, but the
  * ceiling that matters is RAM: the KV cache is allocated up front per slot, so
  * the router's `ctx-size` in deploy/llama/models.ini is what this must agree
  * with. Live web retrieval spends a large share of this on source text, which
@@ -57,25 +57,28 @@ const CHAT_CONTEXT_WINDOW = 8192;
 /** @type {ModelRecord[]} */
 export const MODEL_REGISTRY = [
   {
-    id: 'qwen3-4b-instruct-2507',
-    name: 'Qwen3-4B-Instruct-2507 (GGUF, Q4_K_M quantization)',
-    // The July 2025 refresh of Qwen3-4B: instruct-only (no thinking mode) with
-    // a later knowledge cutoff than the original release below.
-    repository: 'https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507',
-    // Qwen publishes safetensors for this revision, not GGUF. Note that
-    // Qwen/Qwen3-4B-Instruct-2507-GGUF does not exist — see deploy/MODELS.md.
-    ggufRepository: 'https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF',
+    id: 'qwen3-14b',
+    name: 'Qwen3-14B (GGUF, Q4_K_M quantization)',
+    // The dense 14B member of the Qwen3 family. Unlike the 2507 instruct
+    // refresh, this is the original hybrid release that keeps the thinking
+    // switch — which is why the runtime below forces enable_thinking off.
+    repository: 'https://huggingface.co/Qwen/Qwen3-14B',
+    // Qwen publishes an official GGUF build for this model.
+    ggufRepository: 'https://huggingface.co/Qwen/Qwen3-14B-GGUF',
     license: 'Apache-2.0',
     commercialUse: true,
-    file: 'Qwen3-4B-Instruct-2507-Q4_K_M.gguf',
-    sha256: process.env.MODEL_SHA256_QWEN3_4B_2507 || '',
+    file: 'Qwen3-14B-Q4_K_M.gguf',
+    sha256:
+      process.env.MODEL_SHA256_QWEN3_14B ||
+      '500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0',
     transmitsDataExternally: false,
     role: 'chat',
     runtime: {
       contextWindow: CHAT_CONTEXT_WINDOW,
-      // No extraBody: this revision dropped the hybrid thinking mode, so
-      // enable_thinking is not a template argument it accepts.
-      label: 'Qwen3 4B Instruct 2507',
+      // Hybrid model: keep reasoning off on CPU or every answer pays a long,
+      // hidden chain-of-thought. Only applied while LLAMACPP_THINKING is false.
+      extraBody: { chat_template_kwargs: { enable_thinking: false } },
+      label: 'Qwen3 14B',
       blurb: 'Recent built-in knowledge, extended by live retrieval.',
     },
   },
