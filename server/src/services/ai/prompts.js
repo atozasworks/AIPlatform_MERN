@@ -37,7 +37,7 @@ export const PROMPT_PROFILES = {
     maxOutputTokens: null, // resolves to MAX_OUTPUT_TOKENS_NORMAL
     retrieval: true,
     instructions:
-      'Give a clear, practical answer. Lead with the direct response, then add only the supporting detail that changes what the reader would do.',
+      'Give a clear, complete and well-structured answer. Lead with the direct response, then explain the key supporting details, the reasoning behind them, and any important caveats or exceptions the reader should know. Use short paragraphs, bullet points or numbered steps where they make the answer easier to follow. Do not pad with filler, but do not cut the explanation short either.',
   },
 
   detailed: {
