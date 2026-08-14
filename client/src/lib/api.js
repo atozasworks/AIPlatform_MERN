@@ -8,14 +8,16 @@ const BASE = '/api/v1';
 let refreshing = null;
 
 async function request(path, { method = 'GET', body, headers = {}, _retried = false } = {}) {
+  const isForm = typeof FormData !== 'undefined' && body instanceof FormData;
   const res = await fetch(`${BASE}${path}`, {
     method,
     credentials: 'include',
     headers: {
-      ...(body ? { 'Content-Type': 'application/json' } : {}),
+      // Let the browser set multipart boundary for FormData.
+      ...(body && !isForm ? { 'Content-Type': 'application/json' } : {}),
       ...headers,
     },
-    body: body ? JSON.stringify(body) : undefined,
+    body: isForm ? body : body ? JSON.stringify(body) : undefined,
   });
 
   if (res.status === 401 && !_retried && !path.startsWith('/auth/')) {
@@ -56,6 +58,8 @@ export const api = {
   post: (path, body) => request(path, { method: 'POST', body }),
   patch: (path, body) => request(path, { method: 'PATCH', body }),
   delete: (path) => request(path, { method: 'DELETE' }),
+  /** Multipart upload (FormData). Do not set Content-Type manually. */
+  upload: (path, formData) => request(path, { method: 'POST', body: formData }),
 };
 
 export default api;

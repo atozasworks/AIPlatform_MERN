@@ -1,6 +1,8 @@
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
+import { AppError } from '../utils/AppError.js';
 import { ingestDocument, removeDocument, listDocuments } from '../services/rag/ingest.js';
+import { extractTextFromUpload } from '../services/rag/extractText.js';
 import { retrieve } from '../services/rag/retriever.js';
 
 /**
@@ -39,6 +41,49 @@ export const create = asyncHandler(async (req, res) => {
         chunkCount: chunks,
       },
       reused,
+    },
+    { status: reused ? 200 : 201 },
+  );
+});
+
+/**
+ * POST /rag/documents/upload — multipart file → extract text → index.
+ * Returns extracted text so the client can ground the current turn immediately.
+ */
+export const upload = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    throw AppError.badRequest('Choose a file to upload', { code: 'FILE_REQUIRED' });
+  }
+
+  const title = String(req.body?.title || req.file.originalname || 'Uploaded file').slice(0, 300);
+  const { text, kind } = await extractTextFromUpload({
+    buffer: req.file.buffer,
+    filename: req.file.originalname || title,
+    mimeType: req.file.mimetype,
+  });
+
+  const { document, chunks, reused } = await ingestDocument({
+    user: req.user,
+    title,
+    content: text,
+    sourceType: 'user-upload',
+    visibility: 'private',
+  });
+
+  return sendSuccess(
+    res,
+    {
+      document: {
+        id: String(document._id),
+        title: document.title,
+        visibility: document.visibility,
+        status: document.status,
+        chunkCount: chunks,
+      },
+      reused,
+      kind,
+      // Cap what we echo back so a huge PDF does not inflate the HTTP reply.
+      content: text.length > 200_000 ? text.slice(0, 200_000) : text,
     },
     { status: reused ? 200 : 201 },
   );
@@ -85,4 +130,4 @@ export const search = asyncHandler(async (req, res) => {
   });
 });
 
-export default { list, create, remove, search };
+export default { list, create, upload, remove, search };
