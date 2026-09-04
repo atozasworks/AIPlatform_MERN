@@ -68,6 +68,9 @@ export default function EmptyState({ variant = 'auto' }) {
         <p className="mt-1 text-sm text-slate-400">
           Ask me anything, I&apos;m here to help you with answers, ideas, and more.
         </p>
+        <p className="mt-2 text-xs text-slate-400">
+          Atozas AI supports English language only.
+        </p>
       </div>
     );
   }

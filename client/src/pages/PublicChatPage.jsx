@@ -139,7 +139,7 @@ export default function PublicChatPage() {
 
           <p className="sticky bottom-0 z-20 shrink-0 bg-slate-50/95 px-4 py-2 text-center text-xs text-slate-400 backdrop-blur dark:bg-slate-950/95">
             ATOZAS AI runs on ATOZAS servers. It can make mistakes — verify important
-            information.
+            information. Atozas AI supports English language only.
           </p>
         </main>
       </div>
@@ -165,6 +165,9 @@ function EmptyGuestState() {
       </p>
       <p className="mt-1 text-sm text-slate-400">
         No login needed. Your chats stay in this browser — other visitors cannot see or continue them.
+      </p>
+      <p className="mt-2 text-xs text-slate-400">
+        Atozas AI supports English language only.
       </p>
     </div>
   );

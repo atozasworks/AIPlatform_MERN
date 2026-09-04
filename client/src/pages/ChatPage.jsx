@@ -88,7 +88,7 @@ export default function ChatPage() {
           )}
           <p className="sticky bottom-0 z-20 shrink-0 bg-slate-50/95 px-4 py-2 text-center text-xs text-slate-400 backdrop-blur dark:bg-slate-950/95">
             ATOZAS AI runs on ATOZAS servers. It can make mistakes — verify important
-            information.
+            information. Atozas AI supports English language only.
           </p>
         </div>
       </main>
