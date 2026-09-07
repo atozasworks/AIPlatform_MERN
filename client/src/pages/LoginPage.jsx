@@ -1,9 +1,10 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { AuthProvider, GoogleLoginButton, EmailOtpLogin } from 'atozas-react-auth-kit';
 import 'atozas-react-auth-kit/styles.css';
 import { useAuth } from '../store/auth.js';
 import AuthLayout from '../components/auth/AuthLayout.jsx';
+import AtozasButton from '../components/auth/AtozasButton.jsx';
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 const HAS_GOOGLE = Boolean(GOOGLE_CLIENT_ID);
@@ -26,6 +27,33 @@ function LoginInner() {
   const bootstrap = useAuth((s) => s.bootstrap);
   const navigate = useNavigate();
   const [error, setError] = useState('');
+  const [sso, setSso] = useState({ enabled: false, autoRedirect: false, checked: false });
+
+  // Discover whether ATOZAS SSO is enabled (server is the source of truth).
+  // Also surfaces a friendly message if the user was bounced back with an error.
+  useEffect(() => {
+    let alive = true;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('sso_error')) {
+      setError('ATOZAS sign-in did not complete. Please try again.');
+    }
+    fetch('/auth/atozas/status', { headers: { Accept: 'application/json' } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (!alive || !body?.data) return;
+        const { enabled, autoRedirect } = body.data;
+        setSso({ enabled: Boolean(enabled), autoRedirect: Boolean(autoRedirect), checked: true });
+        // Optional hands-free redirect straight to ATOZAS, unless the user was
+        // just bounced back from a failed attempt (avoids a redirect loop).
+        if (enabled && autoRedirect && !params.get('sso_error')) {
+          window.location.assign('/auth/atozas');
+        }
+      })
+      .catch(() => alive && setSso((s) => ({ ...s, checked: true })));
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const onSuccess = useCallback(async () => {
     setError('');
@@ -50,11 +78,19 @@ function LoginInner() {
         </div>
       )}
 
-      {HAS_GOOGLE && (
+      {sso.enabled && (
+        <div className="mb-5">
+          <AtozasButton returnTo="/" />
+        </div>
+      )}
+
+      {(HAS_GOOGLE || sso.enabled) && (
         <>
-          <div className="mb-5 flex justify-center">
-            <GoogleLoginButton onSuccess={onSuccess} onError={onError} />
-          </div>
+          {HAS_GOOGLE && (
+            <div className="mb-5 flex justify-center">
+              <GoogleLoginButton onSuccess={onSuccess} onError={onError} />
+            </div>
+          )}
           <div className="mb-5 flex items-center gap-3 text-xs uppercase tracking-wide text-slate-400">
             <span className="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
             or with email

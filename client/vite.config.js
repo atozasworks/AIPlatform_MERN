@@ -70,6 +70,9 @@ export default defineConfig({
         },
       },
       '/socket.io': { target: 'http://localhost:5000', ws: true },
+      // ATOZAS SSO routes live at root `/auth` on the backend. Proxying them
+      // keeps the OIDC session cookie same-origin with the SPA during dev.
+      '/auth': { target: 'http://localhost:5000', changeOrigin: true, agent: proxyAgent },
     },
   },
 });

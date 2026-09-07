@@ -13,9 +13,30 @@ export const useAuth = create((set) => ({
     try {
       const { user } = await api.get('/auth/me');
       set({ user, status: 'authenticated' });
+      return;
     } catch {
-      set({ user: null, status: 'anonymous' });
+      // App JWT session absent/expired — fall through to an ATOZAS SSO restore.
     }
+    // If an ATOZAS SSO session exists, this re-mints the app's JWT cookies and
+    // returns the user. Returns 401 (or 404 when SSO is disabled) otherwise, so
+    // existing non-SSO deployments simply land as anonymous.
+    try {
+      const res = await fetch('/auth/atozas/me', {
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      });
+      if (res.ok) {
+        const body = await res.json().catch(() => null);
+        const user = body?.data?.user;
+        if (user) {
+          set({ user, status: 'authenticated' });
+          return;
+        }
+      }
+    } catch {
+      /* ignore — treat as anonymous */
+    }
+    set({ user: null, status: 'anonymous' });
   },
 
   /** Request a one-time login code by email. */
@@ -38,7 +59,15 @@ export const useAuth = create((set) => ({
   },
 
   async logout() {
+    // Clear the app's JWT cookie session (existing behaviour).
     await api.post('/auth/logout').catch(() => {});
+    // Also tear down any ATOZAS SSO session so /auth/atozas/me can't restore it.
+    // No-op for non-SSO deployments (endpoint clears cookies unconditionally).
+    await fetch('/auth/logout', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    }).catch(() => {});
     set({ user: null, status: 'anonymous' });
   },
 }));

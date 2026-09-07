@@ -398,6 +398,50 @@ export const env = {
     authMax: num(process.env.AUTH_RATE_LIMIT_MAX, 10),
   },
 
+  /**
+   * ATOZAS Cross-Domain SSO (OIDC client / relying party).
+   *
+   * This app is an OIDC *client* only — never an identity provider. The flow is
+   * Authorization Code + PKCE (S256); client_secret, the authorization code, the
+   * PKCE verifier and provider tokens all stay server-side (see
+   * services/atozasOidc.js). When `enabled` is false the SSO router is not
+   * mounted and every existing auth path behaves exactly as before.
+   *
+   * The explicit *_URL overrides are optional: leave them blank to discover the
+   * endpoints from `${issuer}/.well-known/openid-configuration` at first use.
+   */
+  atozas: {
+    enabled: bool(process.env.ATOZAS_SSO_ENABLED, false),
+    issuer: (process.env.ATOZAS_ISSUER || '').replace(/\/+$/, ''),
+    clientId: process.env.ATOZAS_CLIENT_ID || '',
+    clientSecret: process.env.ATOZAS_CLIENT_SECRET || '',
+    redirectUri: process.env.ATOZAS_REDIRECT_URI || '',
+    scope: process.env.ATOZAS_SCOPE || 'openid email profile',
+    // Explicit endpoint overrides; blank => OIDC discovery from the issuer.
+    authorizeUrl: process.env.ATOZAS_AUTHORIZE_URL || '',
+    tokenUrl: process.env.ATOZAS_TOKEN_URL || '',
+    userinfoUrl: process.env.ATOZAS_USERINFO_URL || '',
+    revokeUrl: process.env.ATOZAS_REVOKE_URL || '',
+    // 'body' => client credentials in the POST body; 'basic' => HTTP Basic header.
+    tokenAuthStyle: process.env.ATOZAS_TOKEN_AUTH_STYLE === 'basic' ? 'basic' : 'body',
+    homepageKey: process.env.ATOZAS_HOMEPAGE_KEY || '',
+    // When true, the login page bounces straight to ATOZAS instead of showing a button.
+    autoRedirect: bool(process.env.ATOZAS_AUTO_REDIRECT, false),
+    session: {
+      cookieName: process.env.ATOZAS_SESSION_COOKIE_NAME || 'atozas_sid',
+      secret: process.env.ATOZAS_SESSION_SECRET || '',
+      maxAgeDays: num(process.env.ATOZAS_SESSION_MAX_AGE_DAYS, 30),
+      collection: process.env.ATOZAS_SESSION_COLLECTION || 'atozas_sessions',
+      // Secure/SameSite for the SSO session cookie. Default secure in prod.
+      cookieSecure: bool(process.env.ATOZAS_COOKIE_SECURE, isProd),
+      cookieSameSite: ['lax', 'strict', 'none'].includes(
+        String(process.env.ATOZAS_COOKIE_SAMESITE || '').toLowerCase(),
+      )
+        ? String(process.env.ATOZAS_COOKIE_SAMESITE).toLowerCase()
+        : 'lax',
+    },
+  },
+
   jsonBodyLimit: process.env.JSON_BODY_LIMIT || '1mb',
 };
 
@@ -421,6 +465,29 @@ if (env.web.enabled) {
     );
   }
   assertSelfHosted('SEARXNG_BASE_URL', env.web.searxngUrl);
+}
+
+/**
+ * ATOZAS SSO is opt-in. When enabled we require the minimum set of values to
+ * complete an Authorization Code + PKCE exchange; a misconfiguration should
+ * fail loudly at boot rather than 500 on the first callback. When disabled we
+ * assert nothing so the rest of the platform is untouched.
+ */
+if (env.atozas.enabled) {
+  const missing = [];
+  if (!env.atozas.issuer && !(env.atozas.authorizeUrl && env.atozas.tokenUrl && env.atozas.userinfoUrl)) {
+    missing.push('ATOZAS_ISSUER (or ATOZAS_AUTHORIZE_URL + ATOZAS_TOKEN_URL + ATOZAS_USERINFO_URL)');
+  }
+  if (!env.atozas.clientId) missing.push('ATOZAS_CLIENT_ID');
+  if (!env.atozas.clientSecret) missing.push('ATOZAS_CLIENT_SECRET');
+  if (!env.atozas.redirectUri) missing.push('ATOZAS_REDIRECT_URI');
+  if (!env.atozas.session.secret) missing.push('ATOZAS_SESSION_SECRET');
+  if (missing.length) {
+    throw new Error(
+      `ATOZAS_SSO_ENABLED=true but missing required config: ${missing.join(', ')}. ` +
+        'Set these in server/.env or disable SSO with ATOZAS_SSO_ENABLED=false.',
+    );
+  }
 }
 
 export default env;

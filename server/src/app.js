@@ -20,6 +20,7 @@ import { globalLimiter } from './middleware/rateLimit.js';
 import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { live, ready } from './controllers/health.controller.js';
 import v1Routes from './routes/v1/index.js';
+import atozasRoutes from './routes/atozas.routes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -81,10 +82,16 @@ export function createApp() {
 
   app.use('/api/v1', globalLimiter, v1Routes);
 
+  // ATOZAS Cross-Domain SSO (OIDC relying party). Mounted at root `/auth` so it
+  // owns the provider redirect URI and — critically — is registered BEFORE the
+  // SPA catch-all below, which now also excludes `/auth` so these routes are
+  // never shadowed by index.html. Inert unless ATOZAS_SSO_ENABLED=true.
+  app.use('/auth', atozasRoutes);
+
   // Serve the built frontend (dist) and fall back to index.html for SPA routes.
   if (fs.existsSync(distPath)) {
     app.use(express.static(distPath));
-    app.get(/^(?!\/api).*/, (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
+    app.get(/^(?!\/api|\/auth).*/, (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
   app.use(notFoundHandler);

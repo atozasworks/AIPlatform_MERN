@@ -175,6 +175,46 @@ export async function loginWithGoogle(idToken) {
   return user;
 }
 
+/**
+ * Resolves the app `User` for an authenticated ATOZAS SSO identity.
+ *
+ * Called only after the OIDC Authorization Code + PKCE exchange succeeds and
+ * the provider's userinfo claims have been validated (email required). An
+ * existing account is reused by email so a user who already signed in via OTP,
+ * Google or password keeps the same account and history; otherwise a verified
+ * account is created. The caller issues the app's normal JWT session.
+ */
+export async function loginWithAtozas(userinfo) {
+  const rawEmail = userinfo?.email;
+  if (!rawEmail) {
+    throw AppError.unauthorized('Your ATOZAS account did not provide an email address.');
+  }
+  const email = String(rawEmail).toLowerCase();
+
+  let user = await User.findOne({ email, deletedAt: null });
+  if (!user) {
+    user = new User({
+      email,
+      name: userinfo.name || nameFromEmail(email),
+      avatarUrl: userinfo.picture || '',
+      picture: userinfo.picture || '',
+      provider: 'atozas',
+      // ATOZAS is a trusted first-party IdP; treat the account as verified.
+      emailVerified: true,
+    });
+    await user.save();
+    return user;
+  }
+
+  // Reuse the existing account. Backfill profile without clobbering set values.
+  if (!user.avatarUrl && userinfo.picture) user.avatarUrl = userinfo.picture;
+  if (!user.picture && userinfo.picture) user.picture = userinfo.picture;
+  if (!user.emailVerified) user.emailVerified = true;
+  user.lastLoginAt = new Date();
+  await user.save();
+  return user;
+}
+
 async function findOrCreateByEmail(email, { emailVerified = false } = {}) {
   let user = await User.findOne({ email, deletedAt: null });
   if (!user) {

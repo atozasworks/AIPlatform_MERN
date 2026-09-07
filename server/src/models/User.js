@@ -28,7 +28,8 @@ const userSchema = new Schema(
     // Profile picture URL as written by atozas-auth-kit-express (Google `picture`).
     picture: { type: String, default: '' },
     // Which mechanism onboarded the account, per atozas-auth-kit-express.
-    provider: { type: String, enum: ['email', 'google', 'password'], default: undefined },
+    // 'atozas' is added for accounts onboarded via ATOZAS cross-domain SSO.
+    provider: { type: String, enum: ['email', 'google', 'password', 'atozas'], default: undefined },
     roles: { type: [String], enum: ['user', 'admin'], default: ['user'] },
 
     // Google Sign-In subject id ("sub"). Sparse so password/OTP users don't collide on null.
