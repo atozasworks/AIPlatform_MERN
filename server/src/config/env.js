@@ -96,6 +96,24 @@ const embeddingBaseUrl = (process.env.EMBEDDING_BASE_URL || 'http://127.0.0.1:80
 const gpuBaseUrl = (process.env.GPU_BASE_URL || '').replace(/\/+$/, '');
 const searxngBaseUrl = (process.env.SEARXNG_BASE_URL || '').replace(/\/+$/, '');
 
+/** Normalizes a SameSite env value to a valid token, defaulting to 'lax'. */
+function sameSiteOr(value, fallback = 'lax') {
+  const v = String(value || '').toLowerCase();
+  return ['lax', 'strict', 'none'].includes(v) ? v : fallback;
+}
+
+// App JWT cookie SameSite. Default 'lax' so the cookie survives the top-level
+// GET navigation back from a cross-site login (ATOZAS OIDC / Google). Chromium
+// (Chrome/Edge) is stricter than Firefox across the OIDC redirect chain, so a
+// cross-domain SSO deployment typically needs 'none'. SameSite=None is only
+// valid with Secure, so Secure is force-enabled whenever SameSite=None.
+const appCookieSameSite = sameSiteOr(process.env.COOKIE_SAMESITE, 'lax');
+const appCookieSecure = bool(process.env.COOKIE_SECURE, isProd) || appCookieSameSite === 'none';
+
+// ATOZAS SSO session cookie SameSite (same reasoning + Secure coupling).
+const atozasCookieSameSite = sameSiteOr(process.env.ATOZAS_COOKIE_SAMESITE, 'lax');
+const atozasCookieSecure = bool(process.env.ATOZAS_COOKIE_SECURE, isProd) || atozasCookieSameSite === 'none';
+
 export const env = {
   nodeEnv: NODE_ENV,
   isProd,
@@ -126,8 +144,9 @@ export const env = {
 
   cookie: {
     domain: process.env.COOKIE_DOMAIN || undefined,
-    secure: bool(process.env.COOKIE_SECURE, isProd),
-    sameSite: isProd ? 'strict' : 'lax',
+    // Secure is forced on when SameSite=None (browsers reject None without it).
+    secure: appCookieSecure,
+    sameSite: appCookieSameSite,
   },
 
   /**
@@ -432,13 +451,10 @@ export const env = {
       secret: process.env.ATOZAS_SESSION_SECRET || '',
       maxAgeDays: num(process.env.ATOZAS_SESSION_MAX_AGE_DAYS, 30),
       collection: process.env.ATOZAS_SESSION_COLLECTION || 'atozas_sessions',
-      // Secure/SameSite for the SSO session cookie. Default secure in prod.
-      cookieSecure: bool(process.env.ATOZAS_COOKIE_SECURE, isProd),
-      cookieSameSite: ['lax', 'strict', 'none'].includes(
-        String(process.env.ATOZAS_COOKIE_SAMESITE || '').toLowerCase(),
-      )
-        ? String(process.env.ATOZAS_COOKIE_SAMESITE).toLowerCase()
-        : 'lax',
+      // Secure/SameSite for the SSO session cookie. Secure is forced on when
+      // SameSite=None (browsers reject None cookies without Secure).
+      cookieSecure: atozasCookieSecure,
+      cookieSameSite: atozasCookieSameSite,
     },
   },
 

@@ -21,6 +21,7 @@ import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { live, ready } from './controllers/health.controller.js';
 import v1Routes from './routes/v1/index.js';
 import atozasRoutes from './routes/atozas.routes.js';
+import { COOKIE_NAMES } from './utils/tokens.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -87,6 +88,22 @@ export function createApp() {
   // SPA catch-all below, which now also excludes `/auth` so these routes are
   // never shadowed by index.html. Inert unless ATOZAS_SSO_ENABLED=true.
   app.use('/auth', atozasRoutes);
+
+  /**
+   * Production no-blink SSO entrypoint.
+   *
+   * Without this, opening `/` first loads the SPA, which calls `/api/v1/auth/me`
+   * (401 for anonymous users) and only then starts the ATOZAS redirect on the
+   * client, causing a visible flash. When SSO is enabled and there is no app
+   * access-token cookie yet, bounce `/` straight to the OIDC start endpoint so
+   * the browser leaves immediately. `/?guest=1` remains the opt-out.
+   */
+  app.get('/', (req, res, next) => {
+    if (!env.atozas.enabled) return next();
+    if (req.query?.guest === '1') return next();
+    if (req.cookies?.[COOKIE_NAMES.access]) return next();
+    return res.redirect('/auth/atozas?returnTo=/');
+  });
 
   // Serve the built frontend (dist) and fall back to index.html for SPA routes.
   if (fs.existsSync(distPath)) {
