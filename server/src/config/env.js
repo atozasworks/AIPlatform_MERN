@@ -36,8 +36,36 @@ function list(value) {
     .filter(Boolean);
 }
 
+function hostnameFromUrl(rawUrl) {
+  if (!rawUrl) return '';
+  try {
+    return new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function siteKeyFromHostname(hostname) {
+  if (!hostname) return '';
+  if (['127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0'].includes(hostname)) return hostname;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return hostname;
+  const parts = hostname.split('.').filter(Boolean);
+  if (parts.length <= 2) return hostname;
+  return parts.slice(-2).join('.');
+}
+
+function isCrossSiteSsoDeployment() {
+  if (!bool(process.env.ATOZAS_SSO_ENABLED, false)) return false;
+  const appSite = siteKeyFromHostname(
+    hostnameFromUrl(process.env.FRONTEND_URL || process.env.BACKEND_URL || ''),
+  );
+  const issuerSite = siteKeyFromHostname(hostnameFromUrl(process.env.ATOZAS_ISSUER || ''));
+  return Boolean(appSite && issuerSite && appSite !== issuerSite);
+}
+
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const isProd = NODE_ENV === 'production';
+const crossSiteSsoDeployment = isCrossSiteSsoDeployment();
 
 /**
  * Hostnames that count as ATOZAS-controlled. Anything else is rejected for
@@ -107,11 +135,25 @@ function sameSiteOr(value, fallback = 'lax') {
 // (Chrome/Edge) is stricter than Firefox across the OIDC redirect chain, so a
 // cross-domain SSO deployment typically needs 'none'. SameSite=None is only
 // valid with Secure, so Secure is force-enabled whenever SameSite=None.
-const appCookieSameSite = sameSiteOr(process.env.COOKIE_SAMESITE, 'lax');
+const requestedAppCookieSameSite = sameSiteOr(
+  process.env.COOKIE_SAMESITE,
+  crossSiteSsoDeployment ? 'none' : 'lax',
+);
+const appCookieSameSite =
+  crossSiteSsoDeployment && requestedAppCookieSameSite !== 'none'
+    ? 'none'
+    : requestedAppCookieSameSite;
 const appCookieSecure = bool(process.env.COOKIE_SECURE, isProd) || appCookieSameSite === 'none';
 
 // ATOZAS SSO session cookie SameSite (same reasoning + Secure coupling).
-const atozasCookieSameSite = sameSiteOr(process.env.ATOZAS_COOKIE_SAMESITE, 'lax');
+const requestedAtozasCookieSameSite = sameSiteOr(
+  process.env.ATOZAS_COOKIE_SAMESITE,
+  crossSiteSsoDeployment ? 'none' : 'lax',
+);
+const atozasCookieSameSite =
+  crossSiteSsoDeployment && requestedAtozasCookieSameSite !== 'none'
+    ? 'none'
+    : requestedAtozasCookieSameSite;
 const atozasCookieSecure = bool(process.env.ATOZAS_COOKIE_SECURE, isProd) || atozasCookieSameSite === 'none';
 
 export const env = {
@@ -431,6 +473,7 @@ export const env = {
    */
   atozas: {
     enabled: bool(process.env.ATOZAS_SSO_ENABLED, false),
+    crossSite: crossSiteSsoDeployment,
     issuer: (process.env.ATOZAS_ISSUER || '').replace(/\/+$/, ''),
     clientId: process.env.ATOZAS_CLIENT_ID || '',
     clientSecret: process.env.ATOZAS_CLIENT_SECRET || '',

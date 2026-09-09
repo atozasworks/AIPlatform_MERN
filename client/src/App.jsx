@@ -38,6 +38,22 @@ function PublicOnlyRoute({ children }) {
 }
 
 /**
+ * True for Vite/local hosts. Local anonymous visits must stay on this app —
+ * auto-starting OIDC would bounce the browser to the ATOZAS IdP
+ * (atozasindia.in) and make `localhost:5173` look like the company homepage.
+ * Production still auto-starts SSO so a homepage card click can sign the user in.
+ */
+function isLocalDevHost() {
+  if (import.meta.env.DEV) return true;
+  try {
+    const host = window.location.hostname;
+    return host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * `/` attempts ATOZAS SSO automatically for anonymous visitors when the server
  * reports SSO is enabled, so a cross-domain launch from the ATOZAS homepage
  * signs the user straight in. To avoid a flashing/looping screen:
@@ -47,12 +63,14 @@ function PublicOnlyRoute({ children }) {
  *     to the login page instead of bouncing forever.
  *
  * Escape hatch: `/?guest=1` keeps the old anonymous public-chat entrypoint.
+ * Local/dev hosts never auto-bounce; use Login → Continue with ATOZAS to test SSO.
  */
 function HomeRoute() {
   const status = useAuth((s) => s.status);
   const location = useLocation();
   const isGuest = new URLSearchParams(location.search).get('guest') === '1';
-  const [ssoEnabled, setSsoEnabled] = useState(atozasSsoEnabled);
+  const localDev = isLocalDevHost();
+  const [ssoEnabled, setSsoEnabled] = useState(localDev ? false : atozasSsoEnabled);
 
   useEffect(() => {
     // A completed login clears the loop marker so future logouts can retry SSO.
@@ -65,6 +83,12 @@ function HomeRoute() {
       return;
     }
     if (status !== 'anonymous' || isGuest) return;
+    // Local Vite/dev: never leave this origin for OIDC just by opening `/`.
+    if (localDev) {
+      atozasSsoEnabled = false;
+      setSsoEnabled(false);
+      return;
+    }
 
     let cancelled = false;
     const decide = (enabled) => {
@@ -96,13 +120,13 @@ function HomeRoute() {
     return () => {
       cancelled = true;
     };
-  }, [status, isGuest]);
+  }, [status, isGuest, localDev]);
 
   if (status === 'loading') return <FullScreenLoader />;
   if (status === 'authenticated') return <ChatPage />;
 
   // Anonymous from here on.
-  if (isGuest) return <PublicChatPage />;
+  if (isGuest || localDev) return <PublicChatPage />;
   // SSO enabled but we already bounced once and came back still anonymous:
   // stop looping and let the user choose a login method.
   if (ssoEnabled && recentSsoAttempt()) return <Navigate to="/login" replace />;

@@ -7,7 +7,16 @@ import AuthLayout from '../components/auth/AuthLayout.jsx';
 import AtozasButton from '../components/auth/AtozasButton.jsx';
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
-const HAS_GOOGLE = Boolean(GOOGLE_CLIENT_ID);
+const GOOGLE_ALLOWED_ORIGINS = String(import.meta.env.VITE_GOOGLE_ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+function googleAllowedOnThisOrigin() {
+  if (typeof window === 'undefined') return true;
+  if (!GOOGLE_ALLOWED_ORIGINS.length) return true;
+  return GOOGLE_ALLOWED_ORIGINS.includes(window.location.origin);
+}
 
 /**
  * Login screen powered by atozas-react-auth-kit. The kit's components call our
@@ -16,14 +25,16 @@ const HAS_GOOGLE = Boolean(GOOGLE_CLIENT_ID);
  * app's own auth store from /auth/me and continue.
  */
 export default function LoginPage() {
+  const googleClientId = googleAllowedOnThisOrigin() ? GOOGLE_CLIENT_ID : '';
   return (
-    <AuthProvider apiUrl="/api/v1/auth" googleClientId={GOOGLE_CLIENT_ID} enableLocalStorage>
+    <AuthProvider apiUrl="/api/v1/auth" googleClientId={googleClientId} enableLocalStorage>
       <LoginInner />
     </AuthProvider>
   );
 }
 
 function LoginInner() {
+  const hasGoogle = googleAllowedOnThisOrigin() && Boolean(GOOGLE_CLIENT_ID);
   const bootstrap = useAuth((s) => s.bootstrap);
   const navigate = useNavigate();
   const [error, setError] = useState('');
@@ -84,9 +95,9 @@ function LoginInner() {
         </div>
       )}
 
-      {(HAS_GOOGLE || sso.enabled) && (
+      {(hasGoogle || sso.enabled) && (
         <>
-          {HAS_GOOGLE && (
+          {hasGoogle && (
             <div className="mb-5 flex justify-center">
               <GoogleLoginButton onSuccess={onSuccess} onError={onError} />
             </div>

@@ -9,7 +9,13 @@ import { AppError } from '../utils/AppError.js';
 import { authLimiter } from '../middleware/rateLimit.js';
 import { User } from '../models/User.js';
 import { loginWithAtozas } from '../services/auth.service.js';
-import { signAccessToken, signRefreshToken, cookieOptions, COOKIE_NAMES } from '../utils/tokens.js';
+import {
+  signAccessToken,
+  signRefreshToken,
+  cookieOptions,
+  clearLegacyHostOnlyAuthCookies,
+  COOKIE_NAMES,
+} from '../utils/tokens.js';
 import * as oidc from '../services/atozasOidc.js';
 
 /**
@@ -31,11 +37,13 @@ const SESSION_MAX_AGE_MS = Math.max(1, cfg.session.maxAgeDays) * 24 * 60 * 60 * 
 
 /** Issues the app's normal JWT cookie session for `user` (same as password/OTP/Google). */
 function issueAppSession(res, user) {
+  clearLegacyHostOnlyAuthCookies(res);
   res.cookie(COOKIE_NAMES.access, signAccessToken(user), cookieOptions('access'));
   res.cookie(COOKIE_NAMES.refresh, signRefreshToken(user), cookieOptions('refresh'));
 }
 
 function clearAppSession(res) {
+  clearLegacyHostOnlyAuthCookies(res);
   res.clearCookie(COOKIE_NAMES.access, { ...cookieOptions('access'), maxAge: undefined });
   res.clearCookie(COOKIE_NAMES.refresh, { ...cookieOptions('refresh'), maxAge: undefined });
 }
@@ -73,6 +81,7 @@ if (cfg.enabled) {
       httpOnly: true,
       secure: cfg.session.cookieSecure,
       sameSite: cfg.session.cookieSameSite,
+      domain: env.cookie.domain,
       maxAge: SESSION_MAX_AGE_MS,
       path: '/auth',
     },
@@ -100,7 +109,7 @@ router.post(
       const providerToken = sess.atozas?.accessToken;
       if (providerToken) oidc.revokeToken(providerToken).catch(() => {}); // fire-and-forget
       await new Promise((resolve) => sess.destroy(() => resolve()));
-      res.clearCookie(cfg.session.cookieName, { path: '/auth' });
+      res.clearCookie(cfg.session.cookieName, { path: '/auth', domain: env.cookie.domain });
     }
 
     res.json({ success: true, data: { ok: true } });
@@ -131,6 +140,7 @@ if (cfg.enabled) {
           logger.error({ err: err?.message }, 'ATOZAS: failed to persist login session');
           return res.redirect('/login?sso_error=session');
         }
+        res.clearCookie(cfg.session.cookieName, { path: '/auth' });
         return res.redirect(authorizeUrl);
       });
     }),
@@ -178,6 +188,7 @@ if (cfg.enabled) {
 
       req.session.save((err) => {
         if (err) logger.error({ err: err?.message }, 'ATOZAS: failed to persist session post-login');
+        res.clearCookie(cfg.session.cookieName, { path: '/auth' });
         return res.redirect(returnTo);
       });
     }),

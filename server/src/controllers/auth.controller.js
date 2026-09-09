@@ -8,15 +8,18 @@ import {
   signRefreshToken,
   verifyRefreshToken,
   cookieOptions,
+  clearLegacyHostOnlyAuthCookies,
   COOKIE_NAMES,
 } from '../utils/tokens.js';
 
 function issueSession(res, user) {
+  clearLegacyHostOnlyAuthCookies(res);
   res.cookie(COOKIE_NAMES.access, signAccessToken(user), cookieOptions('access'));
   res.cookie(COOKIE_NAMES.refresh, signRefreshToken(user), cookieOptions('refresh'));
 }
 
 function clearSession(res) {
+  clearLegacyHostOnlyAuthCookies(res);
   res.clearCookie(COOKIE_NAMES.access, { ...cookieOptions('access'), maxAge: undefined });
   res.clearCookie(COOKIE_NAMES.refresh, { ...cookieOptions('refresh'), maxAge: undefined });
 }

@@ -97,8 +97,12 @@ export function createApp() {
    * client, causing a visible flash. When SSO is enabled and there is no app
    * access-token cookie yet, bounce `/` straight to the OIDC start endpoint so
    * the browser leaves immediately. `/?guest=1` remains the opt-out.
+   *
+   * Skipped in non-production so local/dev never leaves this origin for the
+   * ATOZAS IdP just by opening `/` (Vite still proxies `/auth` for manual SSO).
    */
   app.get('/', (req, res, next) => {
+    if (!env.isProd) return next();
     if (!env.atozas.enabled) return next();
     if (req.query?.guest === '1') return next();
     if (req.cookies?.[COOKIE_NAMES.access]) return next();

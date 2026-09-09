@@ -4,6 +4,7 @@ import {
   signAccessToken,
   signRefreshToken,
   cookieOptions,
+  clearLegacyHostOnlyAuthCookies,
   COOKIE_NAMES,
 } from '../utils/tokens.js';
 
@@ -38,6 +39,7 @@ export function bridgeKitSession(req, res, next) {
         if (!user) return originalJson(body);
         user.lastLoginAt = new Date();
         return user.save().then(() => {
+          clearLegacyHostOnlyAuthCookies(res);
           res.cookie(COOKIE_NAMES.access, signAccessToken(user), cookieOptions('access'));
           res.cookie(COOKIE_NAMES.refresh, signRefreshToken(user), cookieOptions('refresh'));
           // Return the app's user shape so /auth/me and this response agree.

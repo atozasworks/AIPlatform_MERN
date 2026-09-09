@@ -55,3 +55,19 @@ export function cookieOptions(kind) {
     maxAge,
   };
 }
+
+function hostOnlyCookieOptions(kind) {
+  const { domain, ...options } = cookieOptions(kind);
+  return options;
+}
+
+/**
+ * Clears pre-migration host-only cookies before re-issuing the domain-scoped
+ * variants. Chromium can keep both copies and send the stale host-only value
+ * first, which makes cookie-parser read the wrong session after a rollout from
+ * `www.atozasai.com` host-only cookies to `.atozasai.com` cookies.
+ */
+export function clearLegacyHostOnlyAuthCookies(res) {
+  res.clearCookie(COOKIE_NAMES.access, { ...hostOnlyCookieOptions('access'), maxAge: undefined });
+  res.clearCookie(COOKIE_NAMES.refresh, { ...hostOnlyCookieOptions('refresh'), maxAge: undefined });
+}
