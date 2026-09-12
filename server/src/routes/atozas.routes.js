@@ -8,6 +8,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { AppError } from '../utils/AppError.js';
 import { authLimiter } from '../middleware/rateLimit.js';
 import { User } from '../models/User.js';
+import { OidcFlow } from '../models/OidcFlow.js';
 import { loginWithAtozas } from '../services/auth.service.js';
 import {
   signAccessToken,
@@ -29,11 +30,18 @@ import * as oidc from '../services/atozasOidc.js';
  *
  * Server-only secrets — client_secret, the authorization code, the PKCE
  * verifier and provider tokens — never reach the browser and are never logged.
+ *
+ * OIDC `state` / PKCE verifier are stored in Mongo (`OidcFlow`) keyed by
+ * `state`, not only in the express-session cookie. Chromium often drops the
+ * session cookie across the cross-site IdP redirect; looking up by `state`
+ * keeps Chrome/Edge/Firefox on the same successful path.
  */
 const cfg = env.atozas;
 const router = Router();
 
 const SESSION_MAX_AGE_MS = Math.max(1, cfg.session.maxAgeDays) * 24 * 60 * 60 * 1000;
+/** Abandoned authorize→callback flows expire quickly (Mongo TTL also cleans them). */
+const OIDC_FLOW_TTL_MS = 10 * 60 * 1000;
 
 /** Issues the app's normal JWT cookie session for `user` (same as password/OTP/Google). */
 function issueAppSession(res, user) {
@@ -83,7 +91,9 @@ if (cfg.enabled) {
       sameSite: cfg.session.cookieSameSite,
       domain: env.cookie.domain,
       maxAge: SESSION_MAX_AGE_MS,
-      path: '/auth',
+      // Wider than `/auth` so restore + logout still see the cookie even if a
+      // proxy rewrites paths; callback is under `/auth` either way.
+      path: '/',
     },
   });
   router.use(sessionMiddleware);
@@ -109,7 +119,17 @@ router.post(
       const providerToken = sess.atozas?.accessToken;
       if (providerToken) oidc.revokeToken(providerToken).catch(() => {}); // fire-and-forget
       await new Promise((resolve) => sess.destroy(() => resolve()));
-      res.clearCookie(cfg.session.cookieName, { path: '/auth', domain: env.cookie.domain });
+      res.clearCookie(cfg.session.cookieName, {
+        path: '/',
+        domain: env.cookie.domain,
+      });
+      // Also clear pre-migration Path=/auth copies if any remain.
+      res.clearCookie(cfg.session.cookieName, {
+        path: '/auth',
+        domain: env.cookie.domain,
+      });
+      res.clearCookie(cfg.session.cookieName, { path: '/auth' });
+      res.clearCookie(cfg.session.cookieName, { path: '/' });
     }
 
     res.json({ success: true, data: { ok: true } });
@@ -127,22 +147,41 @@ if (cfg.enabled) {
       const nonce = oidc.createNonce();
       const { verifier, challenge } = oidc.createPkce();
       const returnTo = safeReturnTo(req.query.returnTo);
+      const createdAt = Date.now();
 
-      // Transient flow secrets live only in the server-side session store.
-      req.session.oidc = { state, nonce, verifier, returnTo, createdAt: Date.now() };
+      // Durable flow record: callback looks this up by `state` even when the
+      // browser drops the SSO session cookie (Chrome/Edge cross-site quirk).
+      await OidcFlow.findOneAndUpdate(
+        { state },
+        {
+          state,
+          nonce,
+          verifier,
+          returnTo,
+          expiresAt: new Date(createdAt + OIDC_FLOW_TTL_MS),
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
+
+      // Best-effort mirror into the session for same-browser restores / logout.
+      if (req.session) {
+        req.session.oidc = { state, nonce, verifier, returnTo, createdAt };
+      }
 
       const authorizeUrl = await oidc.buildAuthorizeUrl({ state, codeChallenge: challenge, nonce });
 
-      // Persist the session before the cross-site redirect so the callback can
-      // validate state/PKCE.
-      req.session.save((err) => {
-        if (err) {
-          logger.error({ err: err?.message }, 'ATOZAS: failed to persist login session');
-          return res.redirect('/login?sso_error=session');
-        }
-        res.clearCookie(cfg.session.cookieName, { path: '/auth' });
-        return res.redirect(authorizeUrl);
-      });
+      const redirect = () => res.redirect(authorizeUrl);
+      if (req.session) {
+        req.session.save((err) => {
+          if (err) {
+            logger.error({ err: err?.message }, 'ATOZAS: failed to persist login session');
+            // Flow is already in Mongo; still proceed to the IdP.
+          }
+          return redirect();
+        });
+        return;
+      }
+      return redirect();
     }),
   );
 
@@ -156,16 +195,35 @@ if (cfg.enabled) {
         logger.warn({ error: String(providerError) }, 'ATOZAS returned an authorization error');
         return res.redirect('/login?sso_error=denied');
       }
+      if (!state || !code) return res.redirect('/login?sso_error=code');
 
-      const flow = req.session?.oidc;
-      if (!flow || !state || String(state) !== flow.state) {
+      // Prefer the durable Mongo flow (Chrome-safe). Fall back to session for
+      // any in-flight sessions created before this deploy.
+      let flow = null;
+      const stored = await OidcFlow.findOneAndDelete({ state: String(state) });
+      if (stored) {
+        if (stored.expiresAt && stored.expiresAt.getTime() < Date.now()) {
+          return res.redirect('/login?sso_error=state');
+        }
+        flow = {
+          state: stored.state,
+          nonce: stored.nonce,
+          verifier: stored.verifier,
+          returnTo: stored.returnTo,
+        };
+      } else {
+        const sessionFlow = req.session?.oidc;
+        if (sessionFlow && String(state) === sessionFlow.state) {
+          flow = sessionFlow;
+          delete req.session.oidc;
+        }
+      }
+
+      if (!flow || String(state) !== flow.state) {
         return res.redirect('/login?sso_error=state');
       }
-      if (!code) return res.redirect('/login?sso_error=code');
 
-      // Consume the one-time flow state immediately (prevents replay).
       const returnTo = safeReturnTo(flow.returnTo);
-      delete req.session.oidc;
 
       let user;
       let tokenSet;
@@ -182,15 +240,41 @@ if (cfg.enabled) {
       // /auth/atozas/me can restore the session later. Provider tokens stay in
       // the server-side session store only (never sent to the client).
       issueAppSession(res, user);
-      req.session.userId = String(user._id);
-      req.session.email = user.email;
-      req.session.atozas = { accessToken: tokenSet.access_token, at: Date.now() };
+      if (req.session) {
+        req.session.userId = String(user._id);
+        req.session.email = user.email;
+        req.session.atozas = { accessToken: tokenSet.access_token, at: Date.now() };
+        delete req.session.oidc;
+      }
 
-      req.session.save((err) => {
-        if (err) logger.error({ err: err?.message }, 'ATOZAS: failed to persist session post-login');
-        res.clearCookie(cfg.session.cookieName, { path: '/auth' });
-        return res.redirect(returnTo);
-      });
+      // 200 HTML + same-origin JS hop (not a 302). Mobile Safari/Chrome ITP
+      // treats a cross-site 302 as bounce-tracking and drops Set-Cookie;
+      // a document response on this origin keeps the session cookies.
+      const finish = () => {
+        res.set('Cache-Control', 'no-store');
+        res.status(200).type('html').send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="referrer" content="same-origin">
+  <meta http-equiv="refresh" content="0;url=${returnTo}">
+  <title>Signing you in…</title>
+</head>
+<body>
+  <p>Signing you in…</p>
+  <script>location.replace(${JSON.stringify(returnTo)});</script>
+  <p><a href="${returnTo}">Continue</a></p>
+</body>
+</html>`);
+      };
+      if (req.session) {
+        req.session.save((err) => {
+          if (err) logger.error({ err: err?.message }, 'ATOZAS: failed to persist session post-login');
+          return finish();
+        });
+        return;
+      }
+      return finish();
     }),
   );
 

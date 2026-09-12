@@ -69,6 +69,9 @@ export const useAuth = create((set) => ({
       headers: { Accept: 'application/json' },
     }).catch(() => {});
     set({ user: null, status: 'anonymous' });
+    if (typeof window !== 'undefined') {
+      window.location.assign('/login');
+    }
   },
 }));
 

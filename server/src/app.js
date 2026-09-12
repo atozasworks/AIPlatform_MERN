@@ -21,7 +21,6 @@ import { notFoundHandler, errorHandler } from './middleware/errorHandler.js';
 import { live, ready } from './controllers/health.controller.js';
 import v1Routes from './routes/v1/index.js';
 import atozasRoutes from './routes/atozas.routes.js';
-import { COOKIE_NAMES } from './utils/tokens.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -87,32 +86,38 @@ export function createApp() {
   // owns the provider redirect URI and — critically — is registered BEFORE the
   // SPA catch-all below, which now also excludes `/auth` so these routes are
   // never shadowed by index.html. Inert unless ATOZAS_SSO_ENABLED=true.
-  app.use('/auth', atozasRoutes);
+  // no-store: browsers / intermediaries must not reuse a stale HTML shell
+  // (or a previous 302) for the OIDC start/callback.
+  app.use('/auth', (req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+  }, atozasRoutes);
 
-  /**
-   * Production no-blink SSO entrypoint.
-   *
-   * Without this, opening `/` first loads the SPA, which calls `/api/v1/auth/me`
-   * (401 for anonymous users) and only then starts the ATOZAS redirect on the
-   * client, causing a visible flash. When SSO is enabled and there is no app
-   * access-token cookie yet, bounce `/` straight to the OIDC start endpoint so
-   * the browser leaves immediately. `/?guest=1` remains the opt-out.
-   *
-   * Skipped in non-production so local/dev never leaves this origin for the
-   * ATOZAS IdP just by opening `/` (Vite still proxies `/auth` for manual SSO).
-   */
-  app.get('/', (req, res, next) => {
-    if (!env.isProd) return next();
-    if (!env.atozas.enabled) return next();
-    if (req.query?.guest === '1') return next();
-    if (req.cookies?.[COOKIE_NAMES.access]) return next();
-    return res.redirect('/auth/atozas?returnTo=/');
-  });
+  // `/` and `/login` stay on this app. SSO to atozasindia.in starts only when
+  // the user clicks "Continue with ATOZAS" (`GET /auth/atozas`) or when the
+  // homepage IdP launches this client (`/auth/atozas/callback`).
 
   // Serve the built frontend (dist) and fall back to index.html for SPA routes.
   if (fs.existsSync(distPath)) {
-    app.use(express.static(distPath));
-    app.get(/^(?!\/api|\/auth).*/, (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
+    app.use(
+      express.static(distPath, {
+        setHeaders(res, filePath) {
+          // index.html + the service worker must revalidate so a new SSO
+          // navigation policy is picked up without a hard refresh.
+          if (
+            filePath.endsWith(`${path.sep}index.html`) ||
+            filePath.endsWith(`${path.sep}sw.js`) ||
+            filePath.endsWith(`${path.sep}registerSW.js`)
+          ) {
+            res.setHeader('Cache-Control', 'no-cache');
+          }
+        },
+      }),
+    );
+    app.get(/^(?!\/api|\/auth).*/, (_req, res) => {
+      res.set('Cache-Control', 'no-cache');
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
   }
 
   app.use(notFoundHandler);

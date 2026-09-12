@@ -1,3 +1,5 @@
+import { clearManualLogin } from '../../lib/sso.js';
+
 /**
  * "Continue with ATOZAS" button.
  *
@@ -13,6 +15,7 @@ export default function AtozasButton({ returnTo = '/' }) {
   return (
     <a
       href={href}
+      onClick={() => clearManualLogin()}
       className="flex w-full items-center justify-center gap-2 rounded-full border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
       data-testid="atozas-sso-button"
     >

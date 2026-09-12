@@ -17,7 +17,27 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      // Registered from main.jsx so a new SW (SSO navigation rules) can
+      // activate immediately instead of waiting for a manual hard refresh.
+      injectRegister: false,
       includeAssets: ['favicon.svg'],
+      workbox: {
+        skipWaiting: true,
+        clientsClaim: true,
+        navigateFallback: 'index.html',
+        // These must hit the network. The default fallback serves cached
+        // index.html for EVERY navigation, which swallows the Express 302
+        // on `/` and `/login` and the OIDC start/callback on `/auth/*`.
+        // Hard-refresh works because it bypasses the SW; a normal click
+        // from atozasindia.in does not.
+        navigateFallbackDenylist: [
+          /^\/auth(?:\/|$)/,
+          /^\/api(?:\/|$)/,
+          /^\/socket\.io(?:\/|$)/,
+          /^\/login(?:\/|$)/,
+          /^\/$/,
+        ],
+      },
       manifest: {
         name: 'AiChat — Unified AI Platform',
         short_name: 'AiChat',

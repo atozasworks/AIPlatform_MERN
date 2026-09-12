@@ -23,6 +23,9 @@ function googleAllowedOnThisOrigin() {
  * atozas-auth-kit-express endpoints (/api/v1/auth). On success the server sets
  * the app's httpOnly cookie session (see authBridge), so we simply hydrate the
  * app's own auth store from /auth/me and continue.
+ *
+ * ATOZAS SSO is opt-in: this page never auto-redirects to atozasindia.in.
+ * The user must click "Continue with ATOZAS" (`GET /auth/atozas`).
  */
 export default function LoginPage() {
   const googleClientId = googleAllowedOnThisOrigin() ? GOOGLE_CLIENT_ID : '';
@@ -38,10 +41,8 @@ function LoginInner() {
   const bootstrap = useAuth((s) => s.bootstrap);
   const navigate = useNavigate();
   const [error, setError] = useState('');
-  const [sso, setSso] = useState({ enabled: false, autoRedirect: false, checked: false });
+  const [sso, setSso] = useState({ enabled: false, checked: false });
 
-  // Discover whether ATOZAS SSO is enabled (server is the source of truth).
-  // Also surfaces a friendly message if the user was bounced back with an error.
   useEffect(() => {
     let alive = true;
     const params = new URLSearchParams(window.location.search);
@@ -52,13 +53,7 @@ function LoginInner() {
       .then((r) => (r.ok ? r.json() : null))
       .then((body) => {
         if (!alive || !body?.data) return;
-        const { enabled, autoRedirect } = body.data;
-        setSso({ enabled: Boolean(enabled), autoRedirect: Boolean(autoRedirect), checked: true });
-        // Optional hands-free redirect straight to ATOZAS, unless the user was
-        // just bounced back from a failed attempt (avoids a redirect loop).
-        if (enabled && autoRedirect && !params.get('sso_error')) {
-          window.location.assign('/auth/atozas');
-        }
+        setSso({ enabled: Boolean(body.data.enabled), checked: true });
       })
       .catch(() => alive && setSso((s) => ({ ...s, checked: true })));
     return () => {
@@ -68,15 +63,11 @@ function LoginInner() {
 
   const onSuccess = useCallback(async () => {
     setError('');
-    // The kit already established the app cookie session via the server bridge;
-    // load the current user through the app's cookie-based /auth/me and go home.
     await bootstrap();
     navigate('/', { replace: true });
   }, [bootstrap, navigate]);
 
   const onError = useCallback((err) => {
-    // Surface the server-provided reason (auth-kit responds with { error, details })
-    // rather than axios's generic "Request failed with status code …".
     const data = err?.response?.data;
     setError(data?.error || data?.details || err?.message || 'Sign-in failed. Please try again.');
   }, []);
