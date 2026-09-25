@@ -219,20 +219,31 @@ if (cfg.enabled) {
         }
       }
 
-      if (!flow || String(state) !== flow.state) {
+      // IdP-initiated SSO: the ATOZAS homepage card launcher
+      // (sso/authorize.php?project=atozas-ai) mints a code for an
+      // already-signed-in visitor and redirects straight here, so THIS app never
+      // created a matching PKCE/state record. Accept it (when enabled) instead of
+      // failing with sso_error=state — this is what makes a homepage card click
+      // auto-log-in. The code is still validated by the token exchange (client
+      // credentials), and the interactive "Continue with ATOZAS" flow is
+      // unaffected because it always has its own RP flow.
+      const idpInitiated = !flow && cfg.allowIdpInitiated;
+
+      if (!flow && !idpInitiated) {
         return res.redirect('/login?sso_error=state');
       }
 
-      const returnTo = safeReturnTo(flow.returnTo);
+      const returnTo = safeReturnTo(flow?.returnTo);
 
       let user;
       let tokenSet;
       try {
-        tokenSet = await oidc.exchangeCode({ code: String(code), codeVerifier: flow.verifier });
+        // No PKCE verifier for IdP-initiated codes; the client_secret authenticates.
+        tokenSet = await oidc.exchangeCode({ code: String(code), codeVerifier: flow?.verifier });
         const userinfo = await oidc.fetchUserInfo(tokenSet.access_token);
         user = await loginWithAtozas(userinfo);
       } catch (err) {
-        logger.warn({ err: err?.message, code: err?.code }, 'ATOZAS callback failed');
+        logger.warn({ err: err?.message, code: err?.code, idpInitiated }, 'ATOZAS callback failed');
         return res.redirect('/login?sso_error=exchange');
       }
 

@@ -130,30 +130,27 @@ function sameSiteOr(value, fallback = 'lax') {
   return ['lax', 'strict', 'none'].includes(v) ? v : fallback;
 }
 
-// App JWT cookie SameSite. Default 'lax' so the cookie survives the top-level
-// GET navigation back from a cross-site login (ATOZAS OIDC / Google). Chromium
-// (Chrome/Edge) is stricter than Firefox across the OIDC redirect chain, so a
-// cross-domain SSO deployment typically needs 'none'. SameSite=None is only
-// valid with Secure, so Secure is force-enabled whenever SameSite=None.
-const requestedAppCookieSameSite = sameSiteOr(
-  process.env.COOKIE_SAMESITE,
-  crossSiteSsoDeployment ? 'none' : 'lax',
-);
-const appCookieSameSite =
-  crossSiteSsoDeployment && requestedAppCookieSameSite !== 'none'
-    ? 'none'
-    : requestedAppCookieSameSite;
+// App JWT + ATOZAS SSO cookies are only ever used SAME-ORIGIN: the SPA calls its
+// own API, and the OIDC callback merely SETS them on the first-party landing.
+// 'lax' is therefore the correct default — it is stored when set, survives the
+// top-level GET navigation back from a cross-site login, and is sent on every
+// same-origin request afterwards.
+//
+// Do NOT force 'none' for cross-site SSO. Chrome/Edge and mobile browsers, with
+// third-party-cookie deprecation and bounce-tracking mitigations (DIPS), now
+// SILENTLY DROP SameSite=None cookies that a site sets on a cross-site redirect
+// landing when it has no prior first-party interaction — which is exactly the
+// homepage-card → atozasai.com flow. Firefox is lenient, so 'none' appeared to
+// work there while Chrome/mobile failed with 401s on /auth/me. Cross-site OIDC
+// state no longer depends on the session cookie surviving the round-trip (it is
+// stored in MongoDB via OidcFlow), so 'none' buys nothing and breaks Chromium.
+//
+// Operators can still opt into 'none'/'strict' explicitly via the env vars.
+// SameSite=None is only valid with Secure, so Secure is force-enabled for 'none'.
+const appCookieSameSite = sameSiteOr(process.env.COOKIE_SAMESITE, 'lax');
 const appCookieSecure = bool(process.env.COOKIE_SECURE, isProd) || appCookieSameSite === 'none';
 
-// ATOZAS SSO session cookie SameSite (same reasoning + Secure coupling).
-const requestedAtozasCookieSameSite = sameSiteOr(
-  process.env.ATOZAS_COOKIE_SAMESITE,
-  crossSiteSsoDeployment ? 'none' : 'lax',
-);
-const atozasCookieSameSite =
-  crossSiteSsoDeployment && requestedAtozasCookieSameSite !== 'none'
-    ? 'none'
-    : requestedAtozasCookieSameSite;
+const atozasCookieSameSite = sameSiteOr(process.env.ATOZAS_COOKIE_SAMESITE, 'lax');
 const atozasCookieSecure = bool(process.env.ATOZAS_COOKIE_SECURE, isProd) || atozasCookieSameSite === 'none';
 
 export const env = {
@@ -489,6 +486,13 @@ export const env = {
     homepageKey: process.env.ATOZAS_HOMEPAGE_KEY || '',
     // When true, the login page bounces straight to ATOZAS instead of showing a button.
     autoRedirect: bool(process.env.ATOZAS_AUTO_REDIRECT, false),
+    // Accept IdP-initiated SSO: the ATOZAS homepage launcher
+    // (sso/authorize.php?project=atozas-ai) signs an already-logged-in visitor
+    // straight into this app by minting an authorization code and redirecting
+    // to /auth/atozas/callback WITHOUT this app first creating the PKCE/state
+    // record. When true the callback still accepts such codes (exchanged with
+    // the client_secret). Set false to require RP-initiated flows only.
+    allowIdpInitiated: bool(process.env.ATOZAS_ALLOW_IDP_INITIATED, true),
     session: {
       cookieName: process.env.ATOZAS_SESSION_COOKIE_NAME || 'atozas_sid',
       secret: process.env.ATOZAS_SESSION_SECRET || '',

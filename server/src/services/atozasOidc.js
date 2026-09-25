@@ -127,8 +127,11 @@ export async function exchangeCode({ code, codeVerifier }) {
     grant_type: 'authorization_code',
     code,
     redirect_uri: cfg.redirectUri,
-    code_verifier: codeVerifier,
   });
+  // PKCE verifier is present for RP-initiated flows only. IdP-initiated codes
+  // (minted by the ATOZAS homepage launcher) carry no PKCE challenge, so the
+  // exchange is authenticated by the client_secret alone.
+  if (codeVerifier) body.set('code_verifier', codeVerifier);
   const headers = { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' };
 
   if (cfg.tokenAuthStyle === 'basic') {
