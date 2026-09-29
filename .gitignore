@@ -16,6 +16,9 @@ deploy/searxng/.secret
 dist/
 build/
 client/dist/
+admin/dist/
+# Admin panel build published for the API to serve at /admin.
+server/admin-dist/
 
 # Logs
 logs/

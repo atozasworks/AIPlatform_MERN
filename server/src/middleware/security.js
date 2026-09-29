@@ -67,12 +67,7 @@ export function helmetMiddleware() {
 
 export function corsMiddleware() {
   const allowlist = new Set(env.corsOrigins);
-  return cors({
-    origin(origin, callback) {
-      // Allow same-origin / server-to-server (no Origin header) and allowlisted origins.
-      if (!origin || allowlist.has(origin)) return callback(null, true);
-      return callback(AppError.forbidden(`Origin not allowed: ${origin}`));
-    },
+  const baseOptions = {
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
@@ -85,6 +80,25 @@ export function corsMiddleware() {
     ],
     // Lets the client read the standard rate-limit headers on a 429.
     exposedHeaders: ['RateLimit', 'RateLimit-Policy', 'Retry-After', 'X-Request-Id'],
+  };
+
+  // Per-request delegate so the request's own host is available. This lets us
+  // always permit SAME-ORIGIN requests, which is essential: ES module scripts
+  // (the SPA bundles, including the admin panel served at /admin) are fetched
+  // in CORS mode and carry an Origin header even when the asset is same-origin.
+  // Without this, the server's own origin would have to be in the allowlist or
+  // the browser refuses to execute the app's own bundle.
+  return cors((req, callback) => {
+    const origin = req.headers.origin;
+    const host = req.headers.host;
+    const proto = req.headers['x-forwarded-proto'] || req.protocol;
+    const selfOrigin = host ? `${proto}://${host}` : null;
+
+    // Allow: no Origin (server-to-server), same-origin, or an allowlisted origin.
+    if (!origin || origin === selfOrigin || allowlist.has(origin)) {
+      return callback(null, { ...baseOptions, origin: true });
+    }
+    return callback(AppError.forbidden(`Origin not allowed: ${origin}`));
   });
 }
 

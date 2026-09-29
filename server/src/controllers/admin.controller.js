@@ -1,5 +1,6 @@
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { sendSuccess } from '../utils/ApiResponse.js';
+import { AppError } from '../utils/AppError.js';
 import { readinessReport } from '../services/health/probes.js';
 import { getMetricsSnapshot, getSystemMetrics } from '../services/health/metrics.js';
 import { describeModelCompliance } from '../services/ai/modelRegistry.js';
@@ -8,6 +9,133 @@ import { checkSearchHealth } from '../services/web/searxng.js';
 import { pauseQueue, resumeQueue, cleanStaleJobs } from '../services/queue/llmQueue.js';
 import { aiGateway } from '../services/ai/AIGateway.js';
 import { env, isSelfHostedUrl } from '../config/env.js';
+import { User } from '../models/User.js';
+import {
+  signAccessToken,
+  signRefreshToken,
+  cookieOptions,
+  clearLegacyHostOnlyAuthCookies,
+  COOKIE_NAMES,
+} from '../utils/tokens.js';
+import {
+  listCollections,
+  getDocuments,
+  getDocument,
+  getOverview,
+} from '../services/admin/dataBrowser.js';
+
+// Mirror auth.controller's session cookies so the admin panel shares the exact
+// same httpOnly JWT session the rest of the platform already trusts. Because
+// the access cookie is scoped to path '/', requireAuth on every /admin route
+// authenticates the panel with no extra plumbing, and the refresh cookie stays
+// on '/api/v1/auth' so the panel reuses the app's existing /auth/refresh.
+function issueSession(res, user) {
+  clearLegacyHostOnlyAuthCookies(res);
+  res.cookie(COOKIE_NAMES.access, signAccessToken(user), cookieOptions('access'));
+  res.cookie(COOKIE_NAMES.refresh, signRefreshToken(user), cookieOptions('refresh'));
+}
+
+function clearSession(res) {
+  clearLegacyHostOnlyAuthCookies(res);
+  res.clearCookie(COOKIE_NAMES.access, { ...cookieOptions('access'), maxAge: undefined });
+  res.clearCookie(COOKIE_NAMES.refresh, { ...cookieOptions('refresh'), maxAge: undefined });
+}
+
+// Locking policy for the admin login endpoint: after this many consecutive
+// failures the account is frozen for the cooldown window, blunting brute force
+// against the one password-bearing surface in an otherwise passwordless app.
+const MAX_FAILED_LOGINS = 5;
+const LOCK_MINUTES = 15;
+
+/**
+ * POST /admin/login
+ *
+ * Email + password sign-in for administrators. Unlike the passwordless user
+ * flow (OTP / Google / SSO), the admin panel authenticates with a stored
+ * bcrypt password and requires the 'admin' role. On success it issues the
+ * standard session cookies via issueSession().
+ *
+ * Registered BEFORE requireAuth/requireRole in admin.routes.js — it is the one
+ * unauthenticated route on the admin router.
+ */
+export const adminLogin = asyncHandler(async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const password = String(req.body?.password || '');
+
+  if (!email || !password) {
+    throw AppError.badRequest('Email and password are required');
+  }
+
+  // Generic message for every credential failure so the endpoint never reveals
+  // whether an email exists, lacks a password, or lacks the admin role.
+  const invalid = () => AppError.unauthorized('Invalid email or password');
+
+  const user = await User.findOne({ email, deletedAt: null }).select('+passwordHash');
+  if (!user) throw invalid();
+
+  if (user.isLocked()) {
+    throw AppError.tooMany('Account temporarily locked after too many attempts. Try again later.');
+  }
+
+  const hasAdmin = user.roles?.includes('admin');
+  const ok = user.passwordHash ? await user.verifyPassword(password) : false;
+
+  if (!ok || !hasAdmin) {
+    // Only count password mismatches toward the lockout; a valid password on a
+    // non-admin account is a misconfiguration, not a brute-force signal.
+    if (!ok) {
+      user.failedLoginCount = (user.failedLoginCount || 0) + 1;
+      if (user.failedLoginCount >= MAX_FAILED_LOGINS) {
+        user.lockUntil = new Date(Date.now() + LOCK_MINUTES * 60 * 1000);
+        user.failedLoginCount = 0;
+      }
+      await user.save();
+    }
+    throw invalid();
+  }
+
+  user.failedLoginCount = 0;
+  user.lockUntil = undefined;
+  user.lastLoginAt = new Date();
+  await user.save();
+
+  issueSession(res, user);
+  return sendSuccess(res, { user: user.toJSON() });
+});
+
+/** GET /admin/me — current administrator (behind requireAuth + requireRole). */
+export const adminMe = asyncHandler(async (req, res) => {
+  return sendSuccess(res, { user: req.user.toJSON() });
+});
+
+/** POST /admin/logout — clears the session cookies. */
+export const adminLogout = asyncHandler(async (_req, res) => {
+  clearSession(res);
+  return sendSuccess(res, { ok: true });
+});
+
+/** GET /admin/overview — collection counts for the dashboard. */
+export const dbOverview = asyncHandler(async (_req, res) => {
+  return sendSuccess(res, await getOverview());
+});
+
+/** GET /admin/db/collections — every registered model with a live count. */
+export const dbCollections = asyncHandler(async (_req, res) => {
+  return sendSuccess(res, { collections: await listCollections() });
+});
+
+/** GET /admin/db/collections/:model — paginated, searchable documents. */
+export const dbDocuments = asyncHandler(async (req, res) => {
+  const { page, limit, search, sort } = req.query;
+  const result = await getDocuments(req.params.model, { page, limit, search, sort });
+  return sendSuccess(res, result);
+});
+
+/** GET /admin/db/collections/:model/:id — a single document. */
+export const dbDocument = asyncHandler(async (req, res) => {
+  const doc = await getDocument(req.params.model, req.params.id);
+  return sendSuccess(res, { document: doc });
+});
 
 /**
  * Administrative visibility into the inference platform.
@@ -127,4 +255,16 @@ export const cleanQueue = asyncHandler(async (_req, res) => {
   return sendSuccess(res, { removed });
 });
 
-export default { aiStatus, pauseGenerationQueue, resumeGenerationQueue, cleanQueue };
+export default {
+  adminLogin,
+  adminMe,
+  adminLogout,
+  aiStatus,
+  pauseGenerationQueue,
+  resumeGenerationQueue,
+  cleanQueue,
+  dbOverview,
+  dbCollections,
+  dbDocuments,
+  dbDocument,
+};

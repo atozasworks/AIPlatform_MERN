@@ -12,6 +12,7 @@
     "start:worker": "node src/worker.js",
     "test": "node --test \"test/*.test.js\"",
     "test:e2e": "node --test --test-concurrency=1 \"test/integration/*.e2e.test.js\"",
+    "create-admin": "node scripts/create-admin.mjs",
     "postinstall": "node scripts/build-auth-kit.mjs"
   },
   "dependencies": {

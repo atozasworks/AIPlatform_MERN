@@ -35,6 +35,10 @@ export default defineConfig({
           /^\/api(?:\/|$)/,
           /^\/socket\.io(?:\/|$)/,
           /^\/login(?:\/|$)/,
+          // The admin panel is a separate app served at /admin. Without this the
+          // chat app's SW would answer /admin navigations with its own cached
+          // index.html and the admin build would never load.
+          /^\/admin(?:\/|$)/,
           /^\/$/,
         ],
       },

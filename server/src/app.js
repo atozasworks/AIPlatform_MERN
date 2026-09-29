@@ -28,6 +28,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // (e.g. htdocs/atozasai.com/server/dist -> ../dist relative to src/).
 const distPath = path.resolve(__dirname, '../dist');
 
+// Built admin panel (separate Vite app in ../../admin). deploy.sh publishes its
+// build here as server/admin-dist, served under /admin (see below).
+const adminDistPath = path.resolve(__dirname, '../admin-dist');
+
 /**
  * Builds and configures the Express application (middleware order matters).
  * Kept separate from the HTTP bootstrap in index.js for testability.
@@ -96,6 +100,28 @@ export function createApp() {
   // `/` and `/login` stay on this app. SSO to atozasindia.in starts only when
   // the user clicks "Continue with ATOZAS" (`GET /auth/atozas`) or when the
   // homepage IdP launches this client (`/auth/atozas/callback`).
+
+  // ── Admin panel (separate SPA served at /admin) ──
+  // Registered BEFORE the main SPA static/catch-all so `/admin` and its assets
+  // resolve to the admin build instead of falling through to the chat app's
+  // index.html. The admin API lives under /api/v1/admin and is untouched here.
+  if (fs.existsSync(adminDistPath)) {
+    app.use(
+      '/admin',
+      express.static(adminDistPath, {
+        setHeaders(res, filePath) {
+          if (filePath.endsWith(`${path.sep}index.html`)) {
+            res.setHeader('Cache-Control', 'no-cache');
+          }
+        },
+      }),
+    );
+    // Client-side routing fallback for deep links like /admin/collections/User.
+    app.get(/^\/admin(?:\/.*)?$/, (_req, res) => {
+      res.set('Cache-Control', 'no-cache');
+      res.sendFile(path.join(adminDistPath, 'index.html'));
+    });
+  }
 
   // Serve the built frontend (dist) and fall back to index.html for SPA routes.
   if (fs.existsSync(distPath)) {

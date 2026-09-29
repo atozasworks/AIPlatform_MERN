@@ -56,10 +56,18 @@ log "Installing server dependencies"
 log "Building the frontend"
 ( cd client && npm ci --no-audit --no-fund && npm run build )
 
-# The API serves the SPA from server/dist.
+log "Building the admin panel"
+( cd admin && npm ci --no-audit --no-fund && npm run build )
+
+# The API serves the chat SPA from server/dist and the admin panel from
+# server/admin-dist (mounted at /admin — see server/src/app.js).
 log "Publishing the built frontend"
 rm -rf server/dist
 cp -r client/dist server/dist
+
+log "Publishing the admin panel"
+rm -rf server/admin-dist
+cp -r admin/dist server/admin-dist
 
 # ── 4. Verify the inference layer before cutting traffic over ──
 log "Checking inference services"
