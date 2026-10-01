@@ -7,6 +7,7 @@ import PublicChatPage from './pages/PublicChatPage.jsx';
 import SharedChatPage from './pages/SharedChatPage.jsx';
 import Spinner from './components/ui/Spinner.jsx';
 import { clearSsoAttempt, clearManualLogin } from './lib/sso.js';
+import { PwaInstallProvider } from './context/PwaInstallContext.jsx';
 
 function PublicOnlyRoute({ children }) {
   const status = useAuth((s) => s.status);
@@ -52,29 +53,31 @@ export default function App() {
   }, [bootstrap]);
 
   return (
-    <Routes>
-      <Route
-        path="/login"
-        element={
-          <PublicOnlyRoute>
-            <LoginPage />
-          </PublicOnlyRoute>
-        }
-      />
-      {/* Registration is implicit (accounts are created on first OTP/Google login). */}
-      <Route path="/register" element={<Navigate to="/login" replace />} />
-      {/* Explicit guest chat URL (same page as anonymous `/`). */}
-      <Route
-        path="/chat"
-        element={
-          <PublicOnlyRoute>
-            <PublicChatPage />
-          </PublicOnlyRoute>
-        }
-      />
-      <Route path="/share/:token" element={<SharedChatPage />} />
-      <Route path="/" element={<HomeRoute />} />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <PwaInstallProvider>
+      <Routes>
+        <Route
+          path="/login"
+          element={
+            <PublicOnlyRoute>
+              <LoginPage />
+            </PublicOnlyRoute>
+          }
+        />
+        {/* Registration is implicit (accounts are created on first OTP/Google login). */}
+        <Route path="/register" element={<Navigate to="/login" replace />} />
+        {/* Explicit guest chat URL (same page as anonymous `/`). */}
+        <Route
+          path="/chat"
+          element={
+            <PublicOnlyRoute>
+              <PublicChatPage />
+            </PublicOnlyRoute>
+          }
+        />
+        <Route path="/share/:token" element={<SharedChatPage />} />
+        <Route path="/" element={<HomeRoute />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </PwaInstallProvider>
   );
 }

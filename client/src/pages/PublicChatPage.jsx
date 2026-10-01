@@ -6,6 +6,7 @@ import PublicMessageBubble from '../components/public/PublicMessageBubble.jsx';
 import PublicSidebar from '../components/public/PublicSidebar.jsx';
 import Spinner from '../components/ui/Spinner.jsx';
 import { usePublicChat } from '../store/publicChat.js';
+import { InstallAppButton } from '../context/PwaInstallContext.jsx';
 
 export default function PublicChatPage() {
   const messages = usePublicChat((s) => s.messages);
@@ -90,6 +91,7 @@ export default function PublicChatPage() {
           </div>
 
           <div className="ml-auto flex items-center gap-2">
+            <InstallAppButton />
             <ThemeToggle />
             <Link
               to="/login"

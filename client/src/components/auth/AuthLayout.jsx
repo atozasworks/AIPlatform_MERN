@@ -1,9 +1,11 @@
 import ThemeToggle from '../ui/ThemeToggle.jsx';
+import { InstallAppButton } from '../../context/PwaInstallContext.jsx';
 
 export default function AuthLayout({ title, subtitle, children }) {
   return (
     <div className="flex min-h-full items-center justify-center px-4 py-10">
-      <div className="absolute right-4 top-4">
+      <div className="absolute right-4 top-4 flex items-center gap-2">
+        <InstallAppButton />
         <ThemeToggle />
       </div>
       <div className="w-full max-w-md animate-fade-in">

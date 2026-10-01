@@ -1,6 +1,7 @@
 import ThemeToggle from '../ui/ThemeToggle.jsx';
 import { useAuth } from '../../store/auth.js';
 import { useChat } from '../../store/chat.js';
+import { InstallAppButton } from '../../context/PwaInstallContext.jsx';
 
 /**
  * Chat header.
@@ -52,6 +53,7 @@ export default function ChatHeader({ onToggleSidebar }) {
       </div>
 
       <div className="ml-auto flex items-center gap-3">
+        <InstallAppButton />
         <ThemeToggle />
         <div
           className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-blue-600 to-violet-600 text-sm font-semibold text-white"

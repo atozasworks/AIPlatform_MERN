@@ -20,6 +20,7 @@ export default defineConfig({
       // Registered from main.jsx so a new SW (SSO navigation rules) can
       // activate immediately instead of waiting for a manual hard refresh.
       injectRegister: false,
+        devOptions: { enabled: true, type: 'module' },
       includeAssets: ['favicon.svg'],
       workbox: {
         skipWaiting: true,
@@ -43,17 +44,16 @@ export default defineConfig({
         ],
       },
       manifest: {
-        name: 'AiChat — Unified AI Platform',
-        short_name: 'AiChat',
+        name: 'Atozasai',
+        short_name: 'Atozasai',
         description: 'Chat with multiple AI models in one place.',
         theme_color: '#0b0f19',
         background_color: '#0b0f19',
         display: 'standalone',
         start_url: '/',
         icons: [
-          // Scalable SVG icon works across install targets. Replace with rasterized
-          // 192/512 PNGs before production for the widest platform support.
-          { src: '/favicon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' },
+          { src: '/pwa-icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
+          { src: '/pwa-icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
         ],
       },
     }),

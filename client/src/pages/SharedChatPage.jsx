@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import Spinner from '../components/ui/Spinner.jsx';
 import ThemeToggle from '../components/ui/ThemeToggle.jsx';
+import { InstallAppButton } from '../context/PwaInstallContext.jsx';
 
 export default function SharedChatPage() {
   const { token } = useParams();
@@ -46,7 +47,8 @@ export default function SharedChatPage() {
         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-800">
           Shared chat · read only
         </span>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          <InstallAppButton />
           <ThemeToggle />
         </div>
       </header>
