@@ -1,15 +1,16 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useChat } from '../../store/chat.js';
 import { api } from '../../lib/api.js';
 import QueueStatus from './QueueStatus.jsx';
 
 /**
  * Broad picker list. Final acceptance is decided server-side after text
- * extraction (PDF / DOCX / Excel / text). Images are listed so the picker
- * opens freely; the API returns a clear error if they cannot be read.
+ * extraction (PDF / DOCX / Excel / text) or OCR (images). Images are listed so
+ * the picker opens freely in the Pictures/Screenshots folders; the API returns
+ * a clear error for formats it cannot read.
  */
 const ACCEPTED =
-  '.pdf,.docx,.doc,.xlsx,.xls,.xlsm,.ods,.txt,.md,.markdown,.csv,.tsv,.json,.html,.htm,.log,.xml,.yaml,.yml,.rtf,.js,.ts,.jsx,.tsx,.py,.java,.c,.cpp,.h,.css,.sql,.ini,.conf,.env,.sh,.bat,.ps1,.go,.rs,.php,.rb,.swift,.kt,.tex';
+  '.pdf,.docx,.doc,.xlsx,.xls,.xlsm,.ods,.txt,.md,.markdown,.csv,.tsv,.json,.html,.htm,.log,.xml,.yaml,.yml,.rtf,.js,.ts,.jsx,.tsx,.py,.java,.c,.cpp,.h,.css,.sql,.ini,.conf,.env,.sh,.bat,.ps1,.go,.rs,.php,.rb,.swift,.kt,.tex,.png,.jpg,.jpeg,.webp,.bmp,.svg';
 const MAX_BYTES = 2 * 1024 * 1024; // matches RAG_MAX_UPLOAD_BYTES default
 
 /**
@@ -25,6 +26,7 @@ export default function Composer() {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState([]);
   const [attachError, setAttachError] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
   const isStreaming = useChat((s) => s.isStreaming);
   const sendMessage = useChat((s) => s.sendMessage);
   const stopStreaming = useChat((s) => s.stopStreaming);
@@ -33,6 +35,13 @@ export default function Composer() {
 
   const uploading = attachments.some((a) => a.status === 'uploading');
   const readyAttachments = attachments.filter((a) => a.status === 'ready');
+
+  useEffect(() => {
+    if (!imagePreview) return undefined;
+    const onKeyDown = (event) => event.key === 'Escape' && setImagePreview(null);
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [imagePreview]);
 
   const submit = async () => {
     const value = text.trim();
@@ -56,6 +65,7 @@ export default function Composer() {
     }
 
     setText('');
+    attachments.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
     setAttachments([]);
     setAttachError(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
@@ -94,9 +104,11 @@ export default function Composer() {
       }
 
       const localId = `up-${crypto.randomUUID()}`;
+      const isImage = file.type.startsWith('image/') || /\.(png|jpe?g|webp|bmp|svg)$/i.test(file.name);
+      const previewUrl = isImage ? URL.createObjectURL(file) : null;
       setAttachments((prev) => [
         ...prev,
-        { localId, title: file.name, status: 'uploading' },
+        { localId, title: file.name, status: 'uploading', previewUrl },
       ]);
 
       try {
@@ -113,6 +125,7 @@ export default function Composer() {
           prev.map((a) =>
             a.localId === localId
               ? {
+                  ...a,
                   localId,
                   title: document?.title || file.name,
                   id: document?.id,
@@ -124,14 +137,22 @@ export default function Composer() {
           ),
         );
       } catch (err) {
-        setAttachments((prev) => prev.filter((a) => a.localId !== localId));
+        setAttachments((prev) => {
+          const failed = prev.find((a) => a.localId === localId);
+          if (failed?.previewUrl) URL.revokeObjectURL(failed.previewUrl);
+          return prev.filter((a) => a.localId !== localId);
+        });
         setAttachError(err.message || `Could not attach "${file.name}".`);
       }
     }
   };
 
   const removeAttachment = (localId) => {
-    setAttachments((prev) => prev.filter((a) => a.localId !== localId));
+    setAttachments((prev) => {
+      const removed = prev.find((a) => a.localId === localId);
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      return prev.filter((a) => a.localId !== localId);
+    });
   };
 
   const canSend =
@@ -143,13 +164,14 @@ export default function Composer() {
       {(attachments.length > 0 || attachError) && (
         <div className="mx-auto mb-2 max-w-3xl space-y-1.5">
           {attachments.length > 0 && (
-            <ul className="flex flex-wrap gap-1.5">
+            <ul className="flex flex-wrap gap-2">
               {attachments.map((a) => (
                 <li
                   key={a.localId}
-                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  className={a.previewUrl ? 'relative flex w-32 flex-col gap-1 rounded-xl border border-slate-200 bg-slate-50 p-1.5 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200' : 'inline-flex max-w-full items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200'}
                 >
-                  <PaperclipIcon className="h-3.5 w-3.5 flex-none text-violet-500" />
+                  {a.previewUrl && <button type="button" onClick={() => setImagePreview(a.previewUrl)} className="block overflow-hidden rounded-lg" aria-label={`Enlarge ${a.title}`}><img src={a.previewUrl} alt={a.title} className="h-24 w-full object-cover" /></button>}
+                  {!a.previewUrl && <PaperclipIcon className="h-3.5 w-3.5 flex-none text-violet-500" />}
                   <span className="truncate">{a.title}</span>
                   {a.status === 'uploading' ? (
                     <span className="flex-none text-slate-400">Uploading…</span>
@@ -157,7 +179,7 @@ export default function Composer() {
                     <button
                       type="button"
                       onClick={() => removeAttachment(a.localId)}
-                      className="flex-none rounded-full p-0.5 text-slate-400 hover:bg-slate-200 hover:text-slate-700 dark:hover:bg-slate-700"
+                      className={a.previewUrl ? 'absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-black/65 text-white hover:bg-black' : 'flex-none rounded-full p-0.5 text-slate-400 hover:bg-slate-200 hover:text-slate-700 dark:hover:bg-slate-700'}
                       aria-label={`Remove ${a.title}`}
                       title="Remove"
                     >
@@ -264,6 +286,12 @@ export default function Composer() {
           </button>
         )}
       </div>
+      {imagePreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" role="dialog" aria-modal="true" aria-label="Image preview" onMouseDown={(event) => { if (event.target === event.currentTarget) setImagePreview(null); }}>
+          <button type="button" onClick={() => setImagePreview(null)} className="absolute right-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-white text-2xl text-slate-800 shadow hover:bg-slate-100" aria-label="Close image preview" title="Close">×</button>
+          <img src={imagePreview} alt="Selected attachment enlarged" className="max-h-[90vh] max-w-[95vw] rounded-lg object-contain shadow-2xl" />
+        </div>
+      )}
     </div>
   );
 }

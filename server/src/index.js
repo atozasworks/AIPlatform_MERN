@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { connectDatabase, disconnectDatabase } from './config/db.js';
 import { closeRedis } from './config/redis.js';
 import { closeQueue } from './services/queue/llmQueue.js';
+import { disposeOcr } from './services/rag/ocr.js';
 import { initSockets } from './sockets/index.js';
 import { resolveEnabledChatModelIds } from './services/ai/modelRegistry.js';
 import { env } from './config/env.js';
@@ -61,6 +62,7 @@ async function start() {
 
     server.close(async () => {
       await closeQueue().catch(() => {});
+      await disposeOcr().catch(() => {});
       await disconnectDatabase().catch(() => {});
       await closeRedis().catch(() => {});
       logger.info('Shutdown complete');

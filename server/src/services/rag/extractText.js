@@ -2,13 +2,20 @@ import mammoth from 'mammoth';
 import { PDFParse } from 'pdf-parse';
 import * as XLSX from 'xlsx';
 import { AppError } from '../../utils/AppError.js';
+import { recognizeImage } from './ocr.js';
 
 /**
  * Extracts plain text from an uploaded buffer so chat attachments can be
- * indexed and grounded. Binary formats without a text layer (images, zip,
- * executables) are rejected with a clear message rather than silently producing
- * empty content.
+ * indexed and grounded. Images are read with OCR (see `ocr.js`); other binary
+ * formats without a text layer (zip, executables) are rejected with a clear
+ * message rather than silently producing empty content.
  */
+
+// Raster formats tesseract.js can decode in Node (see its image-format docs).
+// gif/tif/tiff/heic are NOT decodable by the engine, so they are rejected with a
+// clear "convert to PNG/JPG" message below rather than a cryptic decode error.
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp']);
+const UNSUPPORTED_IMAGE_EXTENSIONS = new Set(['gif', 'tif', 'tiff', 'heic']);
 
 const TEXT_EXTENSIONS = new Set([
   'txt',
@@ -158,12 +165,52 @@ export async function extractTextFromUpload({ buffer, filename, mimeType = '' })
       return { text, kind: 'spreadsheet' };
     }
 
-    if (
-      mime.startsWith('image/') ||
-      ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'heic', 'svg'].includes(ext)
-    ) {
+    if (ext === 'svg' || mime === 'image/svg+xml') {
+      // SVG is XML, not a raster: pull its <text> content directly instead of
+      // running OCR (which cannot decode SVG).
+      const raw = buffer.toString('utf8');
+      const texts = [...raw.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/gi)]
+        .map((m) => m[1].replace(/<[^>]+>/g, ''))
+        .join(' ')
+        .trim();
+      if (!texts) {
+        throw AppError.badRequest(
+          'No readable text was found in this SVG image.',
+          { code: 'NO_EXTRACTABLE_TEXT' },
+        );
+      }
+      return { text: texts, kind: 'image' };
+    }
+
+    if (UNSUPPORTED_IMAGE_EXTENSIONS.has(ext)) {
       throw AppError.badRequest(
-        'Image files cannot be read as text by ATOZAS AI yet. Attach a PDF, Word (.docx), Excel, or text file instead.',
+        `This image format (.${ext}) cannot be read. Please save it as PNG or JPG and attach it again.`,
+        { code: 'UNSUPPORTED_FILE_TYPE' },
+      );
+    }
+
+    // Raster images: run OCR. The MIME check is limited to the formats the
+    // engine can actually decode; anything else (heic, gif, …) is rejected above
+    // with a "convert to PNG/JPG" message.
+    if (
+      ['image/png', 'image/jpeg', 'image/webp', 'image/bmp'].includes(mime) ||
+      IMAGE_EXTENSIONS.has(ext)
+    ) {
+      const text = await recognizeImage({ buffer });
+      if (!text) {
+        throw AppError.badRequest(
+          'No readable text was found in this image. Make sure it contains clear, legible text and try again.',
+          { code: 'NO_EXTRACTABLE_TEXT' },
+        );
+      }
+      return { text, kind: 'image' };
+    }
+
+    // An image MIME type with an unrecognised extension: treat as an image the
+    // engine may not decode, with a clear message instead of a decode crash.
+    if (mime.startsWith('image/')) {
+      throw AppError.badRequest(
+        'This image format cannot be read. Please save it as PNG or JPG and attach it again.',
         { code: 'UNSUPPORTED_FILE_TYPE' },
       );
     }

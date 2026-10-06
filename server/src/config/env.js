@@ -339,6 +339,24 @@ export const env = {
   },
 
   /**
+   * OCR for image attachments. The chat model is text-only, so an uploaded
+   * image is read by running OCR over it and feeding the recognised text into
+   * the same grounding path as a document. `tesseract.js` is pure WASM (no
+   * native build), so it runs on the CPU-only VPS. The first OCR call downloads
+   * the language data (WASM + traineddata) from the CDN, so a deployment that
+   * must keep zero egress should either pre-cache it or set OCR_ENABLED=false.
+   */
+  ocr: {
+    enabled: bool(process.env.OCR_ENABLED, true),
+    // Tesseract language code(s). 'eng' is the default; add more (e.g. 'eng+ta')
+    // to recognise other scripts.
+    language: process.env.OCR_LANGUAGE || 'eng',
+    // Wall-clock ceiling for one recognition. OCR on a large screenshot can be
+    // slow on CPU; this stops a hung worker from stalling the request.
+    timeoutMs: num(process.env.OCR_TIMEOUT_MS, 60000),
+  },
+
+  /**
    * Live web retrieval — the only component in ATOZAS that talks to the public
    * internet.
    *
