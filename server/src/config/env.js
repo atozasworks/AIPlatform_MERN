@@ -168,6 +168,7 @@ export const env = {
   ],
 
   mongoUri: required('MONGO_URI', process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/aichat'),
+  // const mongoUri = process.env.MONGO_URI || 'mongodb://atozasaiuser:A1b2c3d4e5atozasai@62.72.31.206:57423/atozasai?authSource=atozasai';
 
   redis: {
     url: process.env.REDIS_URL || 'redis://127.0.0.1:6379',
