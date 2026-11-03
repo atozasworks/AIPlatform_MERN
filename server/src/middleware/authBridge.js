@@ -1,12 +1,6 @@
 import { User } from '../models/User.js';
 import { logger } from '../config/logger.js';
-import {
-  signAccessToken,
-  signRefreshToken,
-  cookieOptions,
-  clearLegacyHostOnlyAuthCookies,
-  COOKIE_NAMES,
-} from '../utils/tokens.js';
+import { issueSessionCookies } from '../utils/tokens.js';
 
 /**
  * Bridges `atozas-auth-kit-express` logins into the app's own httpOnly-cookie
@@ -39,11 +33,9 @@ export function bridgeKitSession(req, res, next) {
         if (!user) return originalJson(body);
         user.lastLoginAt = new Date();
         return user.save().then(() => {
-          clearLegacyHostOnlyAuthCookies(res);
-          res.cookie(COOKIE_NAMES.access, signAccessToken(user), cookieOptions('access'));
-          res.cookie(COOKIE_NAMES.refresh, signRefreshToken(user), cookieOptions('refresh'));
+          const sessionExpiresAt = issueSessionCookies(res, user);
           // Return the app's user shape so /auth/me and this response agree.
-          return originalJson({ ...body, user: user.toJSON() });
+          return originalJson({ ...body, user: user.toJSON(), sessionExpiresAt });
         });
       })
       .catch((err) => {

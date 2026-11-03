@@ -7,19 +7,19 @@ import { env } from '../config/env.js';
  * `refreshTokenVersion` so we can invalidate all sessions on demand
  * ("log out from all devices").
  */
-export function signAccessToken(user) {
+export function signAccessToken(user, { expiresIn = env.jwt.accessTtl } = {}) {
   return jwt.sign(
     { sub: String(user._id), roles: user.roles, type: 'access' },
     env.jwt.accessSecret,
-    { expiresIn: env.jwt.accessTtl },
+    { expiresIn },
   );
 }
 
-export function signRefreshToken(user) {
+export function signRefreshToken(user, { expiresIn = env.jwt.refreshTtl } = {}) {
   return jwt.sign(
     { sub: String(user._id), ver: user.refreshTokenVersion, type: 'refresh' },
     env.jwt.refreshSecret,
-    { expiresIn: env.jwt.refreshTtl },
+    { expiresIn },
   );
 }
 
@@ -36,16 +36,26 @@ export const COOKIE_NAMES = {
   refresh: 'refreshToken',
 };
 
-function ttlToMs(ttl) {
+/** Parses jwt `expiresIn` strings like `15m` / `1h` / `30d` into milliseconds. */
+export function ttlToMs(ttl) {
   const match = /^(\d+)([smhd])$/.exec(ttl);
-  if (!match) return 15 * 60 * 1000;
+  if (!match) return 60 * 60 * 1000;
   const n = Number(match[1]);
   const unit = { s: 1000, m: 60000, h: 3600000, d: 86400000 }[match[2]];
   return n * unit;
 }
 
-export function cookieOptions(kind) {
-  const maxAge = ttlToMs(kind === 'refresh' ? env.jwt.refreshTtl : env.jwt.accessTtl);
+/**
+ * Absolute app-session lifetime (ms). Access and refresh share this window so
+ * a login lasts exactly this long — refresh cannot slide the session forward.
+ */
+export function sessionTtlMs() {
+  return Math.min(ttlToMs(env.jwt.accessTtl), ttlToMs(env.jwt.refreshTtl));
+}
+
+export function cookieOptions(kind, maxAgeMs) {
+  const maxAge =
+    maxAgeMs ?? ttlToMs(kind === 'refresh' ? env.jwt.refreshTtl : env.jwt.accessTtl);
   return {
     httpOnly: true,
     secure: env.cookie.secure,
@@ -56,8 +66,8 @@ export function cookieOptions(kind) {
   };
 }
 
-function hostOnlyCookieOptions(kind) {
-  const { domain, ...options } = cookieOptions(kind);
+function hostOnlyCookieOptions(kind, maxAgeMs) {
+  const { domain, ...options } = cookieOptions(kind, maxAgeMs);
   return options;
 }
 
@@ -70,4 +80,18 @@ function hostOnlyCookieOptions(kind) {
 export function clearLegacyHostOnlyAuthCookies(res) {
   res.clearCookie(COOKIE_NAMES.access, { ...hostOnlyCookieOptions('access'), maxAge: undefined });
   res.clearCookie(COOKIE_NAMES.refresh, { ...hostOnlyCookieOptions('refresh'), maxAge: undefined });
+}
+
+/**
+ * Issues access + refresh cookies that both expire after `maxAgeMs` (absolute
+ * remaining session window). Defaults to the configured session TTL.
+ * @returns {number} epoch ms when the session expires
+ */
+export function issueSessionCookies(res, user, maxAgeMs = sessionTtlMs()) {
+  const ms = Math.max(1000, Math.floor(maxAgeMs));
+  const expiresIn = `${Math.ceil(ms / 1000)}s`;
+  clearLegacyHostOnlyAuthCookies(res);
+  res.cookie(COOKIE_NAMES.access, signAccessToken(user, { expiresIn }), cookieOptions('access', ms));
+  res.cookie(COOKIE_NAMES.refresh, signRefreshToken(user, { expiresIn }), cookieOptions('refresh', ms));
+  return Date.now() + ms;
 }

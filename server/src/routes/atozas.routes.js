@@ -11,10 +11,10 @@ import { User } from '../models/User.js';
 import { OidcFlow } from '../models/OidcFlow.js';
 import { loginWithAtozas } from '../services/auth.service.js';
 import {
-  signAccessToken,
-  signRefreshToken,
   cookieOptions,
   clearLegacyHostOnlyAuthCookies,
+  issueSessionCookies,
+  sessionTtlMs,
   COOKIE_NAMES,
 } from '../utils/tokens.js';
 import * as oidc from '../services/atozasOidc.js';
@@ -44,10 +44,8 @@ const SESSION_MAX_AGE_MS = Math.max(1, cfg.session.maxAgeDays) * 24 * 60 * 60 * 
 const OIDC_FLOW_TTL_MS = 10 * 60 * 1000;
 
 /** Issues the app's normal JWT cookie session for `user` (same as password/OTP/Google). */
-function issueAppSession(res, user) {
-  clearLegacyHostOnlyAuthCookies(res);
-  res.cookie(COOKIE_NAMES.access, signAccessToken(user), cookieOptions('access'));
-  res.cookie(COOKIE_NAMES.refresh, signRefreshToken(user), cookieOptions('refresh'));
+function issueAppSession(res, user, maxAgeMs) {
+  return issueSessionCookies(res, user, maxAgeMs);
 }
 
 function clearAppSession(res) {
@@ -250,10 +248,13 @@ if (cfg.enabled) {
       // Issue the app's normal JWT session and remember the SSO binding so
       // /auth/atozas/me can restore the session later. Provider tokens stay in
       // the server-side session store only (never sent to the client).
+      // appLoggedInAt anchors the absolute 1h app session — silent restore
+      // must not slide past this window.
       issueAppSession(res, user);
       if (req.session) {
         req.session.userId = String(user._id);
         req.session.email = user.email;
+        req.session.appLoggedInAt = Date.now();
         req.session.atozas = { accessToken: tokenSet.access_token, at: Date.now() };
         delete req.session.oidc;
       }
@@ -303,10 +304,16 @@ if (cfg.enabled) {
         throw AppError.unauthorized('Account no longer exists');
       }
 
-      // Re-mint fresh app cookies so a signed-in ATOZAS user stays logged in
-      // even after the short-lived access cookie expires.
-      issueAppSession(res, user);
-      res.json({ success: true, data: { user: user.toJSON() } });
+      // Re-mint only for the remaining absolute app-session window. Once the
+      // window elapses the user must sign in again (SSO IdP session may remain).
+      const startedAt = Number(req.session.appLoggedInAt) || 0;
+      const remainingMs = sessionTtlMs() - (Date.now() - startedAt);
+      if (!startedAt || remainingMs <= 0) {
+        throw AppError.unauthorized('Session expired, please log in again');
+      }
+
+      const sessionExpiresAt = issueAppSession(res, user, remainingMs);
+      res.json({ success: true, data: { user: user.toJSON(), sessionExpiresAt } });
     }),
   );
 }

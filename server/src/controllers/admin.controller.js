@@ -11,10 +11,9 @@ import { aiGateway } from '../services/ai/AIGateway.js';
 import { env, isSelfHostedUrl } from '../config/env.js';
 import { User } from '../models/User.js';
 import {
-  signAccessToken,
-  signRefreshToken,
   cookieOptions,
   clearLegacyHostOnlyAuthCookies,
+  issueSessionCookies,
   COOKIE_NAMES,
 } from '../utils/tokens.js';
 import {
@@ -30,9 +29,7 @@ import {
 // authenticates the panel with no extra plumbing, and the refresh cookie stays
 // on '/api/v1/auth' so the panel reuses the app's existing /auth/refresh.
 function issueSession(res, user) {
-  clearLegacyHostOnlyAuthCookies(res);
-  res.cookie(COOKIE_NAMES.access, signAccessToken(user), cookieOptions('access'));
-  res.cookie(COOKIE_NAMES.refresh, signRefreshToken(user), cookieOptions('refresh'));
+  issueSessionCookies(res, user);
 }
 
 function clearSession(res) {
