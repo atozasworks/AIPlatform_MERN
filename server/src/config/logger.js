@@ -6,7 +6,9 @@ import { env } from './env.js';
  * Redacts sensitive fields so we never log passwords, tokens, or API keys (§26).
  */
 export const logger = pino({
-  level: env.isProd ? 'info' : 'debug',
+  // LOG_LEVEL overrides the default so tests can silence output and operators
+  // can raise verbosity without a code change. Accepts pino levels or 'silent'.
+  level: process.env.LOG_LEVEL || (env.isProd ? 'info' : 'debug'),
   redact: {
     paths: [
       'req.headers.authorization',

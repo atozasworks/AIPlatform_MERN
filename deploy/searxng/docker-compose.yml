@@ -1,0 +1,48 @@
+# Self-hosted SearXNG for ATOZAS live web retrieval.
+#
+#   cd deploy/searxng
+#   cp .env.example .env && edit it   # set SEARXNG_SECRET
+#   docker compose up -d
+#
+# Why self-hosted rather than a public instance: SearXNG sees the user's question
+# in cleartext. Pointing ATOZAS at someone else's instance would hand every query
+# to an operator we do not control — the precise leak that server/src/config/env.js
+# refuses to boot with (it asserts SEARXNG_BASE_URL is loopback or private).
+#
+# Why no search API instead: Google, Bing and Brave all require an account, bill
+# per query, and log queries against that account. SearXNG aggregates the same
+# engines anonymously, with no key and no bill.
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: atozas-searxng
+    restart: unless-stopped
+    # Bound to loopback only. Nothing outside this host may query it, and Nginx
+    # deliberately does not proxy it: it is infrastructure, not a public surface.
+    ports:
+      - '127.0.0.1:8888:8080'
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://127.0.0.1:8888/
+      - SEARXNG_SECRET=${SEARXNG_SECRET}
+      # SearXNG's own limiter is for public instances fending off scrapers. This
+      # instance has exactly one client (the ATOZAS worker), which is already
+      # rate-limited per user upstream, so the limiter would only produce
+      # spurious 429s under normal load.
+      - SEARXNG_LIMITER=false
+    # A metasearch aggregator is I/O-bound. Capping it keeps it from competing
+    # with llama-server for the cores that generate tokens.
+    cpus: 1.0
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    healthcheck:
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://127.0.0.1:8080/healthz']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

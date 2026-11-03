@@ -1,0 +1,28 @@
+# Line-ending policy.
+#
+# Development happens on Windows (core.autocrlf=true) but deploy/ runs on the
+# Ubuntu VPS. A shell script or systemd unit checked out with CRLF fails there
+# in a way that is hard to read: bash reports "syntax error near unexpected
+# token $'\r'" and systemd silently appends a carriage return to ExecStart
+# arguments. Pin these to LF so the result does not depend on the git config
+# of whoever cloned the repository.
+
+* text=auto
+
+*.sh        text eol=lf
+*.service   text eol=lf
+*.conf      text eol=lf
+*.bash      text eol=lf
+
+# Windows-only helpers stay CRLF.
+*.ps1       text eol=crlf
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# Never normalise binaries.
+*.gguf      binary
+*.png       binary
+*.jpg       binary
+*.ico       binary
+*.woff      binary
+*.woff2     binary

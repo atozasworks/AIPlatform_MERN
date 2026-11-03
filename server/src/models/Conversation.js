@@ -25,12 +25,20 @@ const conversationSchema = new Schema(
     model: { type: String, required: true },
     systemPrompt: { type: String, default: '', maxlength: 8000 },
 
+    /** Prompt profile applied to new turns (see services/ai/prompts.js). */
+    profile: { type: String, default: 'balanced' },
+    /** Lets a user turn document grounding off for a specific conversation. */
+    retrievalEnabled: { type: Boolean, default: true },
+
     folder: { type: String, default: null },
     tags: { type: [String], default: [] },
 
     pinned: { type: Boolean, default: false },
     archived: { type: Boolean, default: false },
     temporary: { type: Boolean, default: false },
+
+    /** Opaque token for read-only shared links; null until the owner shares. */
+    shareToken: { type: String, default: null, index: true, sparse: true },
 
     tokenUsage: { type: tokenUsageSchema, default: () => ({}) },
     costEstimate: { type: Number, default: 0 },

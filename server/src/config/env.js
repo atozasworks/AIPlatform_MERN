@@ -5,6 +5,11 @@ dotenv.config();
 /**
  * Centralized, validated environment configuration.
  * Avoids `process.env` access scattered across the codebase (coding rule §31).
+ *
+ * ATOZAS policy: every inference, embedding and retrieval component addressed
+ * here must be self-hosted on ATOZAS-controlled infrastructure. Provider base
+ * URLs are asserted against `assertSelfHosted()` at boot so a misconfigured
+ * deployment fails loudly instead of silently shipping prompts to a vendor.
  */
 function required(name, value, { allowEmpty = false } = {}) {
   if (value === undefined || (!allowEmpty && value === '')) {
@@ -14,8 +19,13 @@ function required(name, value, { allowEmpty = false } = {}) {
 }
 
 function bool(value, fallback = false) {
-  if (value === undefined) return fallback;
+  if (value === undefined || value === '') return fallback;
   return String(value).toLowerCase() === 'true';
+}
+
+function num(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function list(value) {
@@ -26,14 +36,128 @@ function list(value) {
     .filter(Boolean);
 }
 
+function hostnameFromUrl(rawUrl) {
+  if (!rawUrl) return '';
+  try {
+    return new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function siteKeyFromHostname(hostname) {
+  if (!hostname) return '';
+  if (['127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0'].includes(hostname)) return hostname;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return hostname;
+  const parts = hostname.split('.').filter(Boolean);
+  if (parts.length <= 2) return hostname;
+  return parts.slice(-2).join('.');
+}
+
+function isCrossSiteSsoDeployment() {
+  if (!bool(process.env.ATOZAS_SSO_ENABLED, false)) return false;
+  const appSite = siteKeyFromHostname(
+    hostnameFromUrl(process.env.FRONTEND_URL || process.env.BACKEND_URL || ''),
+  );
+  const issuerSite = siteKeyFromHostname(hostnameFromUrl(process.env.ATOZAS_ISSUER || ''));
+  return Boolean(appSite && issuerSite && appSite !== issuerSite);
+}
+
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const isProd = NODE_ENV === 'production';
+const crossSiteSsoDeployment = isCrossSiteSsoDeployment();
+
+/**
+ * Hostnames that count as ATOZAS-controlled. Anything else is rejected for
+ * inference/embedding traffic. Extend via SELF_HOSTED_ALLOWED_HOSTS when the
+ * dedicated GPU box lands on a private address or VPN hostname.
+ */
+const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0']);
+const extraSelfHosted = new Set(list(process.env.SELF_HOSTED_ALLOWED_HOSTS));
+
+/** True for loopback, RFC1918 private ranges, and explicitly allowlisted hosts. */
+export function isSelfHostedUrl(rawUrl) {
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  const host = url.hostname;
+  if (LOCAL_HOSTS.has(host)) return true;
+  if (extraSelfHosted.has(host)) return true;
+  if (/^10\./.test(host)) return true;
+  if (/^192\.168\./.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
+  return false;
+}
+
+/**
+ * Fails startup when an inference endpoint points outside ATOZAS infrastructure.
+ * This is the hard guarantee behind "no third-party LLM API".
+ *
+ * Scope note: this guards *model* traffic — prompts, documents and embeddings.
+ * Live web retrieval (`services/web/`) deliberately makes outbound requests and
+ * is governed by the separate `env.web` block below. The two are kept apart on
+ * purpose: retrieval fetching a public news page is a different risk from a
+ * prompt leaving the box, and collapsing them into one switch would make it
+ * impossible to audit either.
+ */
+export function assertSelfHosted(label, rawUrl) {
+  if (!isSelfHostedUrl(rawUrl)) {
+    throw new Error(
+      `${label} must point at ATOZAS-controlled infrastructure (loopback, private range, ` +
+        `or SELF_HOSTED_ALLOWED_HOSTS). Refusing to start with: ${rawUrl}`,
+    );
+  }
+  return rawUrl;
+}
+
+const llamacppBaseUrl = (process.env.LLAMACPP_BASE_URL || 'http://127.0.0.1:8081').replace(
+  /\/+$/,
+  '',
+);
+const embeddingBaseUrl = (process.env.EMBEDDING_BASE_URL || 'http://127.0.0.1:8082').replace(
+  /\/+$/,
+  '',
+);
+const gpuBaseUrl = (process.env.GPU_BASE_URL || '').replace(/\/+$/, '');
+const searxngBaseUrl = (process.env.SEARXNG_BASE_URL || '').replace(/\/+$/, '');
+
+/** Normalizes a SameSite env value to a valid token, defaulting to 'lax'. */
+function sameSiteOr(value, fallback = 'lax') {
+  const v = String(value || '').toLowerCase();
+  return ['lax', 'strict', 'none'].includes(v) ? v : fallback;
+}
+
+// App JWT + ATOZAS SSO cookies are only ever used SAME-ORIGIN: the SPA calls its
+// own API, and the OIDC callback merely SETS them on the first-party landing.
+// 'lax' is therefore the correct default — it is stored when set, survives the
+// top-level GET navigation back from a cross-site login, and is sent on every
+// same-origin request afterwards.
+//
+// Do NOT force 'none' for cross-site SSO. Chrome/Edge and mobile browsers, with
+// third-party-cookie deprecation and bounce-tracking mitigations (DIPS), now
+// SILENTLY DROP SameSite=None cookies that a site sets on a cross-site redirect
+// landing when it has no prior first-party interaction — which is exactly the
+// homepage-card → atozasai.com flow. Firefox is lenient, so 'none' appeared to
+// work there while Chrome/mobile failed with 401s on /auth/me. Cross-site OIDC
+// state no longer depends on the session cookie surviving the round-trip (it is
+// stored in MongoDB via OidcFlow), so 'none' buys nothing and breaks Chromium.
+//
+// Operators can still opt into 'none'/'strict' explicitly via the env vars.
+// SameSite=None is only valid with Secure, so Secure is force-enabled for 'none'.
+const appCookieSameSite = sameSiteOr(process.env.COOKIE_SAMESITE, 'lax');
+const appCookieSecure = bool(process.env.COOKIE_SECURE, isProd) || appCookieSameSite === 'none';
+
+const atozasCookieSameSite = sameSiteOr(process.env.ATOZAS_COOKIE_SAMESITE, 'lax');
+const atozasCookieSecure = bool(process.env.ATOZAS_COOKIE_SECURE, isProd) || atozasCookieSameSite === 'none';
 
 export const env = {
   nodeEnv: NODE_ENV,
   isProd,
   isTest: NODE_ENV === 'test',
-  port: Number(process.env.PORT || 5000),
+  port: num(process.env.PORT, 5000),
   backendUrl: process.env.BACKEND_URL || 'http://localhost:5000',
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
   corsOrigins: [
@@ -44,66 +168,407 @@ export const env = {
   ],
 
   mongoUri: required('MONGO_URI', process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/aichat'),
-  redisUrl: process.env.REDIS_URL || '',
+
+  redis: {
+    url: process.env.REDIS_URL || 'redis://127.0.0.1:6379',
+    prefix: process.env.REDIS_PREFIX || 'atozas',
+  },
 
   jwt: {
     accessSecret: required('JWT_ACCESS_SECRET', process.env.JWT_ACCESS_SECRET),
     refreshSecret: required('JWT_REFRESH_SECRET', process.env.JWT_REFRESH_SECRET),
-    accessTtl: process.env.JWT_ACCESS_TTL || '15m',
-    refreshTtl: process.env.JWT_REFRESH_TTL || '30d',
+    accessTtl: process.env.JWT_ACCESS_TTL || '1h',
+    refreshTtl: process.env.JWT_REFRESH_TTL || '1h',
   },
 
   cookie: {
     domain: process.env.COOKIE_DOMAIN || undefined,
-    secure: bool(process.env.COOKIE_SECURE, isProd),
-    sameSite: isProd ? 'strict' : 'lax',
+    // Secure is forced on when SameSite=None (browsers reject None without it).
+    secure: appCookieSecure,
+    sameSite: appCookieSameSite,
+  },
+
+  /**
+   * Passwordless email OTP + Google Sign-In.
+   *
+   * OTP delivery uses SMTP (Gmail by default). When SMTP credentials are absent
+   * the email service falls back to logging the code (development only) so the
+   * flow stays testable without wiring a mailbox.
+   */
+  auth: {
+    otp: {
+      length: num(process.env.OTP_LENGTH, 6),
+      ttlMinutes: num(process.env.OTP_TTL_MINUTES, 10),
+      maxAttempts: num(process.env.OTP_MAX_ATTEMPTS, 5),
+      // Minimum seconds between two code requests for the same email.
+      resendCooldownSeconds: num(process.env.OTP_RESEND_COOLDOWN_SECONDS, 60),
+    },
+    google: {
+      // Same value is exposed to the client as VITE_GOOGLE_CLIENT_ID at build time.
+      clientId: process.env.GOOGLE_CLIENT_ID || '',
+      get enabled() {
+        return Boolean(this.clientId);
+      },
+    },
+  },
+
+  email: {
+    // When false (or SMTP creds missing) OTP codes are logged instead of sent.
+    enabled: bool(process.env.EMAIL_ENABLED, false),
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: num(process.env.SMTP_PORT, 465),
+    secure: bool(process.env.SMTP_SECURE, true),
+    user: process.env.SMTP_USER || '',
+    pass: process.env.SMTP_PASS || '',
+    from: process.env.MAIL_FROM || process.env.SMTP_USER || 'ATOZAS AI <no-reply@atozasai.com>',
   },
 
   ai: {
+    // Only self-hosted engines are selectable. There is no external fallback.
     defaultProvider: process.env.DEFAULT_AI_PROVIDER || 'llamacpp',
-    defaultModel: process.env.DEFAULT_AI_MODEL || 'local-gguf',
-    groq: {
-      apiKey: process.env.GROQ_API_KEY || '',
-      baseUrl: process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1',
-      defaultModel: process.env.GROQ_DEFAULT_MODEL || 'llama-3.3-70b-versatile',
-    },
-    openai: {
-      apiKey: process.env.OPENAI_API_KEY || '',
-      baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-      defaultModel: process.env.OPENAI_DEFAULT_MODEL || 'gpt-4o-mini',
-    },
-    // Self-hosted open model via Ollama (your own LLM; no third-party API).
-    ollama: {
-      enabled: bool(process.env.OLLAMA_ENABLED, false),
-      baseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
-      model: process.env.OLLAMA_MODEL || 'llama3.2:3b',
-      models: list(process.env.OLLAMA_MODELS),
-      contextWindow: Number(process.env.OLLAMA_CONTEXT_WINDOW || 8192),
-    },
-    // Self-hosted open model via llama.cpp's `llama-server` (OpenAI-compatible
-    // endpoint at {baseUrl}/v1). Your own LLM; no third-party API, no per-token cost.
+    defaultProfile: process.env.DEFAULT_PROMPT_PROFILE || 'balanced',
+
+    /**
+     * Chat models served by `llama-server` in router mode (OpenAI-format
+     * endpoint at {baseUrl}/v1).
+     *
+     * One router process fronts every chat model and spawns a child server per
+     * model on demand, evicting least-recently-used ones once `routerMaxLoaded`
+     * are resident. That is what makes a four-model picker affordable on a
+     * CPU box: only the selected model holds weights and KV cache in RAM.
+     */
     llamacpp: {
-      enabled: bool(process.env.LLAMACPP_ENABLED, false),
-      baseUrl: process.env.LLAMACPP_BASE_URL || 'http://127.0.0.1:8080',
-      // llama-server needs no key by default; only set if started with --api-key.
-      apiKey: process.env.LLAMACPP_API_KEY || 'llama.cpp',
-      // llama-server serves a single loaded model; this id is mainly a display label.
-      model: process.env.LLAMACPP_MODEL || 'local-gguf',
+      enabled: bool(process.env.LLAMACPP_ENABLED, true),
+      baseUrl: llamacppBaseUrl,
+      // llama-server only checks this when started with --api-key.
+      apiKey: process.env.LLAMACPP_API_KEY || '',
+      // Empty = every chat model in modelRegistry.js. Narrow it per deployment
+      // when a host does not have all the weights on disk.
       models: list(process.env.LLAMACPP_MODELS),
-      contextWindow: Number(process.env.LLAMACPP_CONTEXT_WINDOW || 8192),
-      // Cap generation length so slow local CPU inference can't run away and
-      // stall/reset the SSE stream. Applied when the caller doesn't specify.
-      maxTokens: Number(process.env.LLAMACPP_MAX_TOKENS || 512),
+      defaultModel: process.env.LLAMACPP_MODEL || 'qwen3-4b-instruct-2507',
+      // Fallback prompt budget for models with no registry runtime entry.
+      contextWindow: num(process.env.LLAMACPP_CONTEXT_WINDOW, 8192),
+      // Mirrors --models-max. 1 keeps a single model resident, which is the
+      // only safe setting on a 16 GB box; raise it when RAM allows.
+      routerMaxLoaded: num(process.env.LLAMACPP_MODELS_MAX, 1),
+      // How long the cached /v1/models availability snapshot stays fresh.
+      catalogTtlMs: num(process.env.LLAMACPP_CATALOG_TTL_MS, 30000),
+      // Wall-clock ceiling for one generation on CPU before the worker aborts.
+      requestTimeoutMs: num(process.env.LLAMACPP_REQUEST_TIMEOUT_MS, 300000),
+      // Qwen3 supports a reasoning mode; CPU-only deployments keep it off.
+      thinking: bool(process.env.LLAMACPP_THINKING, false),
+    },
+
+    /** Second llama-server instance dedicated to embeddings (never the chat model). */
+    embeddings: {
+      enabled: bool(process.env.EMBEDDING_ENABLED, true),
+      baseUrl: embeddingBaseUrl,
+      apiKey: process.env.EMBEDDING_API_KEY || '',
+      model: process.env.EMBEDDING_MODEL || 'qwen3-embedding-0.6b',
+      dimensions: num(process.env.EMBEDDING_DIMENSIONS, 1024),
+      batchSize: num(process.env.EMBEDDING_BATCH_SIZE, 16),
+      requestTimeoutMs: num(process.env.EMBEDDING_REQUEST_TIMEOUT_MS, 60000),
+      /**
+       * Retrieval embedding models are asymmetric: the query and the stored
+       * passage must be wrapped differently or similarity collapses. Qwen3
+       * wants an instruction block on the query and raw text on the passage.
+       * Both are configurable so swapping the model stays a config change.
+       */
+      queryPrefix:
+        process.env.EMBEDDING_QUERY_PREFIX ??
+        'Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ',
+      passagePrefix: process.env.EMBEDDING_PASSAGE_PREFIX ?? '',
+    },
+
+    /**
+     * Future ATOZAS-owned GPU node. "OpenAI-compatible" describes the wire
+     * format only; the URL is still forced through assertSelfHosted().
+     */
+    gpu: {
+      enabled: bool(process.env.GPU_ENABLED, false),
+      baseUrl: gpuBaseUrl,
+      apiKey: process.env.GPU_API_KEY || '',
+      model: process.env.GPU_MODEL || '',
+      contextWindow: num(process.env.GPU_CONTEXT_WINDOW, 32768),
+      requestTimeoutMs: num(process.env.GPU_REQUEST_TIMEOUT_MS, 120000),
     },
   },
 
+  /** Server-side usage ceilings. Every value is operator-tunable. */
+  limits: {
+    maxActiveRequestsPerUser: num(process.env.MAX_ACTIVE_REQUESTS_PER_USER, 1),
+    maxRequestsPerMinute: num(process.env.MAX_REQUESTS_PER_MINUTE, 5),
+    maxRequestsPerHour: num(process.env.MAX_REQUESTS_PER_HOUR, 40),
+    maxQueueSize: num(process.env.MAX_QUEUE_SIZE, 100),
+    maxPromptTokens: num(process.env.MAX_PROMPT_TOKENS, 4000),
+    maxOutputTokensNormal: num(process.env.MAX_OUTPUT_TOKENS_NORMAL, 800),
+    maxOutputTokensDetailed: num(process.env.MAX_OUTPUT_TOKENS_DETAILED, 1500),
+    maxConversationContextTokens: num(process.env.MAX_CONVERSATION_CONTEXT_TOKENS, 6000),
+    maxRetrievalContextTokens: num(process.env.MAX_RETRIEVAL_CONTEXT_TOKENS, 3000),
+    workerConcurrency: num(process.env.LLM_WORKER_CONCURRENCY, 2),
+    // How long a job may sit queued before it is dropped as stale.
+    queueStaleMs: num(process.env.QUEUE_STALE_MS, 120000),
+    // How long the SSE relay waits for the worker before giving up.
+    streamIdleTimeoutMs: num(process.env.STREAM_IDLE_TIMEOUT_MS, 120000),
+    sseHeartbeatMs: num(process.env.SSE_HEARTBEAT_MS, 15000),
+    jobAttempts: num(process.env.JOB_ATTEMPTS, 2),
+  },
+
+  /** Circuit breaker around llama-server. */
+  breaker: {
+    failureThreshold: num(process.env.BREAKER_FAILURE_THRESHOLD, 5),
+    windowMs: num(process.env.BREAKER_WINDOW_MS, 60000),
+    cooldownMs: num(process.env.BREAKER_COOLDOWN_MS, 30000),
+  },
+
+  rag: {
+    enabled: bool(process.env.RAG_ENABLED, true),
+    topK: num(process.env.RAG_TOP_K, 6),
+    // Candidates pulled from keyword search before vector rescoring.
+    candidateLimit: num(process.env.RAG_CANDIDATE_LIMIT, 200),
+    minScore: Number(process.env.RAG_MIN_SCORE ?? 0.72),
+    chunkTokens: num(process.env.RAG_CHUNK_TOKENS, 380),
+    chunkOverlapTokens: num(process.env.RAG_CHUNK_OVERLAP_TOKENS, 60),
+    // Weight of dense similarity in the hybrid score (rest goes to keyword).
+    vectorWeight: Number(process.env.RAG_VECTOR_WEIGHT ?? 0.75),
+    maxUploadBytes: num(process.env.RAG_MAX_UPLOAD_BYTES, 2 * 1024 * 1024),
+    // Upper bound on the in-process similarity cache. 100k chunks of 384 dims
+    // is roughly 150 MB resident — safe on a 32 GB box, tune down if not.
+    vectorCacheMaxChunks: num(process.env.RAG_VECTOR_CACHE_MAX_CHUNKS, 100000),
+    maxDocumentsPerUser: num(process.env.RAG_MAX_DOCUMENTS_PER_USER, 200),
+  },
+
+  /**
+   * OCR for image attachments. The chat model is text-only, so an uploaded
+   * image is read by running OCR over it and feeding the recognised text into
+   * the same grounding path as a document. `tesseract.js` is pure WASM (no
+   * native build), so it runs on the CPU-only VPS. The first OCR call downloads
+   * the language data (WASM + traineddata) from the CDN, so a deployment that
+   * must keep zero egress should either pre-cache it or set OCR_ENABLED=false.
+   */
+  ocr: {
+    enabled: bool(process.env.OCR_ENABLED, true),
+    // Tesseract language code(s). 'eng' is the default; add more (e.g. 'eng+ta')
+    // to recognise other scripts.
+    language: process.env.OCR_LANGUAGE || 'eng',
+    // Wall-clock ceiling for one recognition. OCR on a large screenshot can be
+    // slow on CPU; this stops a hung worker from stalling the request.
+    timeoutMs: num(process.env.OCR_TIMEOUT_MS, 60000),
+  },
+
+  /**
+   * Live web retrieval — the only component in ATOZAS that talks to the public
+   * internet.
+   *
+   * Why it exists: a 4B model's weights are frozen at its training cutoff, so
+   * "what is the current version of X" or "what happened today" cannot be
+   * answered honestly from the model alone. Retrieval supplies dated, cited
+   * source text and the model summarises it.
+   *
+   * What it does NOT do: no prompt, conversation or uploaded document is ever
+   * sent outward. Only a short search query derived from the user's question
+   * reaches SearXNG (self-hosted), and only public URLs are fetched. The model
+   * itself stays on loopback under `assertSelfHosted()`.
+   *
+   * Disabled by default. A deployment that must keep zero egress simply leaves
+   * WEB_RETRIEVAL_ENABLED unset and behaves exactly as it did before.
+   */
+  web: {
+    enabled: bool(process.env.WEB_RETRIEVAL_ENABLED, false),
+
+    /**
+     * Self-hosted SearXNG instance (open-source metasearch). Required: there is
+     * deliberately no fallback to a commercial search API, because that would
+     * put the user's question in a third party's logs.
+     */
+    searxngUrl: searxngBaseUrl,
+    searxngEngines: list(process.env.SEARXNG_ENGINES),
+    // SearXNG's own categories; 'general' plus 'news' covers current events.
+    searxngCategories: list(process.env.SEARXNG_CATEGORIES).length
+      ? list(process.env.SEARXNG_CATEGORIES)
+      : ['general'],
+    searxngLanguage: process.env.SEARXNG_LANGUAGE || 'en',
+    searxngTimeoutMs: num(process.env.SEARXNG_TIMEOUT_MS, 8000),
+
+    /** How many search hits to consider, and how many of those to actually fetch. */
+    maxResults: num(process.env.WEB_MAX_RESULTS, 8),
+    maxFetch: num(process.env.WEB_MAX_FETCH, 4),
+    /** Passages handed to the model after reranking. */
+    topPassages: num(process.env.WEB_TOP_PASSAGES, 4),
+
+    /**
+     * How passages are scored against the question.
+     *
+     * 'lexical' (default) is BM25-style term overlap: microseconds, no inference.
+     * 'embedding' uses the local embedding server, which measured ~5.5 seconds
+     * per passage on the ATOZAS CPU box — more than the entire retrieval budget
+     * for even four passages. See services/web/rerank.js for the measurement.
+     * Only worth enabling on a GPU or dedicated embedding host.
+     */
+    rerankMode: process.env.WEB_RERANK_MODE === 'embedding' ? 'embedding' : 'lexical',
+
+    /**
+     * Ceiling on how many passages are scored. Effectively free under lexical
+     * scoring; under 'embedding' this is the knob that decides whether reranking
+     * fits in the budget at all.
+     */
+    maxRerankPassages: num(process.env.WEB_MAX_RERANK_PASSAGES, 40),
+
+    /**
+     * Per-page fetch limits. A CPU box cannot afford to stream a 40 MB page
+     * through an HTML parser, and a slow origin must not hold a generation slot.
+     */
+    fetchTimeoutMs: num(process.env.WEB_FETCH_TIMEOUT_MS, 6000),
+    maxPageBytes: num(process.env.WEB_MAX_PAGE_BYTES, 2 * 1024 * 1024),
+    /** Wall-clock ceiling for the whole retrieval phase, fetches included. */
+    totalBudgetMs: num(process.env.WEB_TOTAL_BUDGET_MS, 20000),
+
+    /**
+     * Empty allowlist means "any public host". Set it to pin retrieval to
+     * sources ATOZAS is willing to quote — official docs, gov sites, a chosen
+     * news set — which is the recommended production posture.
+     */
+    allowedDomains: list(process.env.WEB_ALLOWED_DOMAINS),
+    blockedDomains: list(process.env.WEB_BLOCKED_DOMAINS),
+
+    /** Identifies ATOZAS to origin servers; some sites block blank agents. */
+    userAgent:
+      process.env.WEB_USER_AGENT ||
+      'ATOZAS-AI/1.0 (+https://atozasai.com; self-hosted retrieval bot)',
+
+    /** Redis TTLs. Repeated questions must not re-hit the same origins. */
+    searchCacheTtlSeconds: num(process.env.WEB_SEARCH_CACHE_TTL_SECONDS, 900),
+    pageCacheTtlSeconds: num(process.env.WEB_PAGE_CACHE_TTL_SECONDS, 3600),
+
+    /**
+     * Minimum rerank score for a web passage to be quoted.
+     *
+     * The default has to depend on the rerank mode, because the two modes emit
+     * scores on unrelated scales and a single number cannot serve both. Embedding
+     * mode yields cosine similarity, where 0.45 is a weak-but-real match. Lexical
+     * mode yields IDF-weighted query coverage, which tops out well below 1 once
+     * term-frequency saturation and length normalization are applied.
+     *
+     * The lexical default was measured, not guessed. Scoring 49 passages from two
+     * real fetched pages:
+     *
+     *   | question the pages answer     | best passages 0.20 - 0.67 |
+     *   | question they do not          | best passages 0.06 - 0.07 |
+     *
+     * 0.15 sits in the gap with roughly a 2x margin either side. Reusing 0.45
+     * here rejected every passage, including correct ones, which is the failure
+     * this split prevents.
+     *
+     * Independent of RAG_MIN_SCORE in either mode: web text is noisier than
+     * curated uploads, and search already applied its own relevance filter.
+     */
+    minScore: Number(
+      process.env.WEB_MIN_SCORE ??
+        (process.env.WEB_RERANK_MODE === 'embedding' ? 0.45 : 0.15),
+    ),
+  },
+
   rateLimit: {
-    windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 60000),
-    max: Number(process.env.RATE_LIMIT_MAX || 120),
-    authMax: Number(process.env.AUTH_RATE_LIMIT_MAX || 10),
+    windowMs: num(process.env.RATE_LIMIT_WINDOW_MS, 60000),
+    max: num(process.env.RATE_LIMIT_MAX, 120),
+    authMax: num(process.env.AUTH_RATE_LIMIT_MAX, 10),
+  },
+
+  /**
+   * ATOZAS Cross-Domain SSO (OIDC client / relying party).
+   *
+   * This app is an OIDC *client* only — never an identity provider. The flow is
+   * Authorization Code + PKCE (S256); client_secret, the authorization code, the
+   * PKCE verifier and provider tokens all stay server-side (see
+   * services/atozasOidc.js). When `enabled` is false the SSO router is not
+   * mounted and every existing auth path behaves exactly as before.
+   *
+   * The explicit *_URL overrides are optional: leave them blank to discover the
+   * endpoints from `${issuer}/.well-known/openid-configuration` at first use.
+   */
+  atozas: {
+    enabled: bool(process.env.ATOZAS_SSO_ENABLED, false),
+    crossSite: crossSiteSsoDeployment,
+    issuer: (process.env.ATOZAS_ISSUER || '').replace(/\/+$/, ''),
+    clientId: process.env.ATOZAS_CLIENT_ID || '',
+    clientSecret: process.env.ATOZAS_CLIENT_SECRET || '',
+    redirectUri: process.env.ATOZAS_REDIRECT_URI || '',
+    scope: process.env.ATOZAS_SCOPE || 'openid email profile',
+    // Explicit endpoint overrides; blank => OIDC discovery from the issuer.
+    authorizeUrl: process.env.ATOZAS_AUTHORIZE_URL || '',
+    tokenUrl: process.env.ATOZAS_TOKEN_URL || '',
+    userinfoUrl: process.env.ATOZAS_USERINFO_URL || '',
+    revokeUrl: process.env.ATOZAS_REVOKE_URL || '',
+    // 'body' => client credentials in the POST body; 'basic' => HTTP Basic header.
+    tokenAuthStyle: process.env.ATOZAS_TOKEN_AUTH_STYLE === 'basic' ? 'basic' : 'body',
+    homepageKey: process.env.ATOZAS_HOMEPAGE_KEY || '',
+    // When true, the login page bounces straight to ATOZAS instead of showing a button.
+    autoRedirect: bool(process.env.ATOZAS_AUTO_REDIRECT, false),
+    // Accept IdP-initiated SSO: the ATOZAS homepage launcher
+    // (sso/authorize.php?project=atozas-ai) signs an already-logged-in visitor
+    // straight into this app by minting an authorization code and redirecting
+    // to /auth/atozas/callback WITHOUT this app first creating the PKCE/state
+    // record. When true the callback still accepts such codes (exchanged with
+    // the client_secret). Set false to require RP-initiated flows only.
+    allowIdpInitiated: bool(process.env.ATOZAS_ALLOW_IDP_INITIATED, true),
+    session: {
+      cookieName: process.env.ATOZAS_SESSION_COOKIE_NAME || 'atozas_sid',
+      secret: process.env.ATOZAS_SESSION_SECRET || '',
+      maxAgeDays: num(process.env.ATOZAS_SESSION_MAX_AGE_DAYS, 30),
+      collection: process.env.ATOZAS_SESSION_COLLECTION || 'atozas_sessions',
+      // Secure/SameSite for the SSO session cookie. Secure is forced on when
+      // SameSite=None (browsers reject None cookies without Secure).
+      cookieSecure: atozasCookieSecure,
+      cookieSameSite: atozasCookieSameSite,
+    },
   },
 
   jsonBodyLimit: process.env.JSON_BODY_LIMIT || '1mb',
 };
+
+// Boot-time egress guarantee for model traffic. Runs on the API process and the
+// worker process. Web retrieval is intentionally not covered here; see env.web.
+if (env.ai.llamacpp.enabled) assertSelfHosted('LLAMACPP_BASE_URL', env.ai.llamacpp.baseUrl);
+if (env.ai.embeddings.enabled) assertSelfHosted('EMBEDDING_BASE_URL', env.ai.embeddings.baseUrl);
+if (env.ai.gpu.enabled) assertSelfHosted('GPU_BASE_URL', env.ai.gpu.baseUrl);
+
+/**
+ * SearXNG is a search *aggregator*, not a model endpoint, but it still sees the
+ * user's query, so it is held to the same self-hosting rule. Pointing this at a
+ * public SearXNG instance would hand every question to a third party — the
+ * exact leak the rest of this file exists to prevent.
+ */
+if (env.web.enabled) {
+  if (!env.web.searxngUrl) {
+    throw new Error(
+      'WEB_RETRIEVAL_ENABLED=true requires SEARXNG_BASE_URL. Run the bundled ' +
+        'self-hosted SearXNG (deploy/searxng/) — a public instance would leak user queries.',
+    );
+  }
+  assertSelfHosted('SEARXNG_BASE_URL', env.web.searxngUrl);
+}
+
+/**
+ * ATOZAS SSO is opt-in. When enabled we require the minimum set of values to
+ * complete an Authorization Code + PKCE exchange; a misconfiguration should
+ * fail loudly at boot rather than 500 on the first callback. When disabled we
+ * assert nothing so the rest of the platform is untouched.
+ */
+if (env.atozas.enabled) {
+  const missing = [];
+  if (!env.atozas.issuer && !(env.atozas.authorizeUrl && env.atozas.tokenUrl && env.atozas.userinfoUrl)) {
+    missing.push('ATOZAS_ISSUER (or ATOZAS_AUTHORIZE_URL + ATOZAS_TOKEN_URL + ATOZAS_USERINFO_URL)');
+  }
+  if (!env.atozas.clientId) missing.push('ATOZAS_CLIENT_ID');
+  if (!env.atozas.clientSecret) missing.push('ATOZAS_CLIENT_SECRET');
+  if (!env.atozas.redirectUri) missing.push('ATOZAS_REDIRECT_URI');
+  if (!env.atozas.session.secret) missing.push('ATOZAS_SESSION_SECRET');
+  if (missing.length) {
+    throw new Error(
+      `ATOZAS_SSO_ENABLED=true but missing required config: ${missing.join(', ')}. ` +
+        'Set these in server/.env or disable SSO with ATOZAS_SSO_ENABLED=false.',
+    );
+  }
+}
 
 export default env;

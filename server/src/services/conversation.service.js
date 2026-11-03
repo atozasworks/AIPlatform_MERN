@@ -1,7 +1,15 @@
+import crypto from 'node:crypto';
+import { customAlphabet } from 'nanoid';
+
 import { Conversation } from '../models/Conversation.js';
 import { Message } from '../models/Message.js';
 import { AppError } from '../utils/AppError.js';
 import { aiGateway } from './ai/AIGateway.js';
+import { isValidProfile } from './ai/prompts.js';
+import { env } from '../config/env.js';
+
+// Unambiguous alphabet (no 0/O/1/I) for a human-copyable, unique private code.
+const generatePrivateCode = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 12);
 
 /** Lean docs only have `_id`; map to `id` so the client matches mongoose toJSON. */
 export function withId(doc) {
@@ -65,11 +73,24 @@ export function buildActivePath(messages, branchChoices = {}) {
 /**
  * Older linear chats stored every user message with parentMessage=null.
  * Repair them into a proper chain so edit-branches don't collide.
+ *
+ * Must NOT run on modern edit-sibling trees: a root-level edit creates a second
+ * user message that also has parentMessage=null (ChatGPT-style versions). The
+ * previous heuristic treated that as "broken linear history" and rewrote the
+ * edited prompt to hang off the first assistant — which collapsed versions and
+ * made a second edit of the same chat fail or look like a one-shot option.
  */
 async function repairLinearParents(conversationId, msgs) {
   const rootUsers = msgs.filter((m) => m.role === 'user' && !m.parentMessage);
+  if (rootUsers.length <= 1) return msgs;
+
+  // Any assistant that already points at a user means the tree is using the
+  // modern parent chain (including edit branches). Leave roots alone.
+  const hasModernParents = msgs.some((m) => m.role === 'assistant' && m.parentMessage);
+  if (hasModernParents) return msgs;
+
   const branched = msgs.filter((m) => m.role === 'user' && m.parentMessage);
-  if (rootUsers.length <= 1 || branched.length > 0) return msgs;
+  if (branched.length > 0) return msgs;
 
   const sorted = [...msgs].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
   let lastAssistantId = null;
@@ -123,6 +144,8 @@ export async function createConversation(userId, input = {}) {
     title: input.title || 'New chat',
     provider: provider.id,
     model,
+    profile: isValidProfile(input.profile) ? input.profile : env.ai.defaultProfile,
+    retrievalEnabled: input.retrievalEnabled !== false,
     systemPrompt: input.systemPrompt || '',
     temporary: Boolean(input.temporary),
   });
@@ -141,13 +164,13 @@ export async function getOwnedConversation(userId, conversationId) {
 export async function listConversations(userId, { search, archived, cursor, limit = 25 } = {}) {
   const query = { user: userId, deletedAt: null };
   if (archived === 'true') query.archived = true;
-  else if (archived === 'false') query.archived = false;
+  else if (archived === 'false') query.archived = { $ne: true };
   if (search) query.$text = { $search: search };
   // Cursor = lastMessageAt ISO string of the last item from the previous page.
   if (cursor) query.lastMessageAt = { $lt: new Date(cursor) };
 
   const items = await Conversation.find(query)
-    .sort({ lastMessageAt: -1 })
+    .sort({ pinned: -1, lastMessageAt: -1 })
     .limit(limit + 1)
     .lean();
 
@@ -169,6 +192,7 @@ export async function getMessages(userId, conversationId) {
 export async function updateConversation(userId, conversationId, patch) {
   const convo = await getOwnedConversation(userId, conversationId);
   Object.assign(convo, patch);
+  if (patch.archived === true) convo.pinned = false;
   await convo.save();
   return convo;
 }
@@ -182,6 +206,69 @@ export async function softDeleteConversation(userId, conversationId) {
     { deletedAt: new Date() },
   );
   return convo;
+}
+
+/** Creates (or returns) a read-only share token for an owned conversation. */
+export async function enableConversationShare(userId, conversationId) {
+  const convo = await getOwnedConversation(userId, conversationId);
+  if (!convo.shareToken) {
+    convo.shareToken = crypto.randomBytes(24).toString('hex');
+    await convo.save();
+  }
+  return convo;
+}
+
+export async function disableConversationShare(userId, conversationId) {
+  const convo = await getOwnedConversation(userId, conversationId);
+  convo.shareToken = null;
+  await convo.save();
+  return convo;
+}
+
+/**
+ * Public read of a shared conversation (no auth). Private messages are omitted.
+ */
+export async function getSharedConversation(token) {
+  const shareToken = String(token || '').trim();
+  if (!/^[a-f0-9]{32,64}$/i.test(shareToken)) {
+    throw AppError.notFound('Shared chat not found');
+  }
+  const convo = await Conversation.findOne({
+    shareToken,
+    deletedAt: null,
+  }).lean();
+  if (!convo) throw AppError.notFound('Shared chat not found');
+
+  const msgs = await Message.find({
+    conversation: convo._id,
+    deletedAt: null,
+    isPrivate: { $ne: true },
+    role: { $in: ['user', 'assistant'] },
+    status: { $nin: ['pending', 'streaming', 'error'] },
+  })
+    .sort({ createdAt: 1 })
+    .select('role content status createdAt')
+    .lean();
+
+  const messages = msgs
+    .filter((m) => m.role === 'user' || (m.content && String(m.content).trim()))
+    .map((m) => ({
+      id: String(m._id),
+      role: m.role,
+      content: m.content || '',
+      status: m.status || 'complete',
+      createdAt: m.createdAt,
+    }));
+
+  return {
+    session: {
+      id: String(convo._id),
+      title: convo.title,
+      createdAt: convo.createdAt,
+      lastMessageAt: convo.lastMessageAt,
+    },
+    messages,
+  };
 }
 
 /**
@@ -206,8 +293,64 @@ export async function prepareMessageEdit(userId, conversationId, messageId) {
   };
 }
 
+/** Reserves a private code that no other message currently holds. */
+async function reserveUniquePrivateCode(attempts = 5) {
+  for (let i = 0; i < attempts; i += 1) {
+    const code = generatePrivateCode();
+    // eslint-disable-next-line no-await-in-loop
+    const clash = await Message.exists({ privateCode: code });
+    if (!clash) return code;
+  }
+  throw new AppError(500, 'Could not generate a unique private code. Please try again.', {
+    code: 'PRIVATE_CODE_GENERATION_FAILED',
+  });
+}
+
+/**
+ * Marks a single (owned) message private and links a randomly generated unique
+ * code to it. Idempotent: re-marking an already-private message keeps its code.
+ * The code is a reference/receipt (emailed by the controller), not an access
+ * gate — the message remains readable to its owner.
+ */
+export async function setMessagePrivate(userId, conversationId, messageId) {
+  await getOwnedConversation(userId, conversationId);
+
+  const message = await Message.findOne({
+    _id: messageId,
+    conversation: conversationId,
+    user: userId,
+    deletedAt: null,
+  });
+  if (!message) throw AppError.notFound('Message not found');
+
+  if (!message.isPrivate || !message.privateCode) {
+    message.isPrivate = true;
+    message.privateCode = await reserveUniquePrivateCode();
+    message.privateCodeSentAt = null;
+    await message.save();
+  }
+
+  return message;
+}
+
+/**
+ * Returns the branch ending at `leafMessageId` split into prior turns and the
+ * current one, without a system prompt. The LLM worker owns prompt assembly and
+ * token budgeting, so it needs the raw history rather than a ready-made array.
+ *
+ * @returns {Promise<{ history: Array<{role:string,content:string}>, currentTurn: object|null }>}
+ */
+export async function getBranchHistory(conversation, { leafMessageId } = {}) {
+  const turns = await buildProviderMessages(conversation, {
+    leafMessageId,
+    includeSystemPrompt: false,
+  });
+  const currentTurn = turns.length ? turns[turns.length - 1] : null;
+  return { history: turns.slice(0, -1), currentTurn };
+}
+
 /** Builds provider history along the branch ending at `leafMessageId` (inclusive). */
-export async function buildProviderMessages(conversation, { leafMessageId } = {}) {
+export async function buildProviderMessages(conversation, { leafMessageId, includeSystemPrompt = true } = {}) {
   let history = await Message.find({
     conversation: conversation._id,
     deletedAt: null,
@@ -224,7 +367,7 @@ export async function buildProviderMessages(conversation, { leafMessageId } = {}
     : buildActivePath(normalized);
 
   const messages = [];
-  if (conversation.systemPrompt) {
+  if (includeSystemPrompt && conversation.systemPrompt) {
     messages.push({ role: 'system', content: conversation.systemPrompt });
   }
   for (const m of path) {

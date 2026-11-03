@@ -1,11 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { useChat } from '../../store/chat.js';
 import MessageBubble from './MessageBubble.jsx';
-import EmptyState from './EmptyState.jsx';
 
 export default function MessageList() {
   const messages = useChat((s) => s.messages);
-  const activeId = useChat((s) => s.activeId);
   const bottomRef = useRef(null);
   const containerRef = useRef(null);
   const stickToBottom = useRef(true);
@@ -22,10 +20,6 @@ export default function MessageList() {
   useEffect(() => {
     if (stickToBottom.current) bottomRef.current?.scrollIntoView({ block: 'end' });
   }, [messages]);
-
-  if (!activeId && messages.length === 0) {
-    return <EmptyState />;
-  }
 
   return (
     <div ref={containerRef} onScroll={onScroll} className="flex-1 overflow-y-auto">

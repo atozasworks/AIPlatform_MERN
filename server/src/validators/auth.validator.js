@@ -1,22 +1,25 @@
 import { z } from 'zod';
 
 const email = z.string().trim().toLowerCase().email('A valid email is required');
-const password = z
-  .string()
-  .min(8, 'Password must be at least 8 characters')
-  .max(200, 'Password is too long');
 
-export const registerSchema = {
+export const otpRequestSchema = {
   body: z.object({
-    name: z.string().trim().min(1, 'Name is required').max(120),
     email,
-    password,
   }),
 };
 
-export const loginSchema = {
+export const otpVerifySchema = {
   body: z.object({
     email,
-    password: z.string().min(1, 'Password is required'),
+    code: z
+      .string()
+      .trim()
+      .regex(/^\d{4,8}$/, 'Enter the numeric code from your email'),
+  }),
+};
+
+export const googleSchema = {
+  body: z.object({
+    credential: z.string().min(1, 'Missing Google credential'),
   }),
 };

@@ -1,0 +1,86 @@
+# SearXNG configuration for ATOZAS live web retrieval.
+#
+# This is a single-client instance: only the ATOZAS worker queries it, over
+# loopback. It is tuned for machine consumption, not for humans browsing.
+
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: 'ATOZAS Retrieval'
+  # No public UI, so there is nothing to contact anyone about.
+  contact_url: false
+  enable_metrics: false
+
+search:
+  # THE critical setting. Without 'json' here SearXNG answers the ATOZAS search
+  # client with HTTP 403, which reads like an auth failure and is the usual
+  # first-run trap. The default format list is html only.
+  formats:
+    - html
+    - json
+
+  # Matches SEARXNG_LANGUAGE in server/.env.
+  default_lang: 'en'
+  # 'moderate' filters adult content without the aggressive false positives of
+  # 'strict', which drops legitimate medical and security results.
+  safe_search: 1
+  # Autocomplete makes an extra upstream request per keystroke. No UI, no need.
+  autocomplete: ''
+
+server:
+  # Overridden by SEARXNG_SECRET in the compose environment; must not stay blank.
+  secret_key: 'change-me-see-dotenv'
+  bind_address: '0.0.0.0'
+  port: 8080
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: 'GET'
+
+ui:
+  static_use_hash: true
+
+outgoing:
+  # Upstream engines are the slow part. This must stay below the client's
+  # SEARXNG_TIMEOUT_MS (default 8000) or the client gives up first and the work
+  # is wasted.
+  request_timeout: 5.0
+  max_request_timeout: 10.0
+  pool_connections: 50
+  pool_maxsize: 20
+  enable_http2: true
+
+engines:
+  # Engines are chosen for text results that survive Readability extraction and
+  # for not requiring an API key. Each `disabled: false` entry is opt-in.
+  - name: duckduckgo
+    disabled: false
+  - name: brave
+    disabled: false
+  - name: wikipedia
+    disabled: false
+  # Wikidata's SPARQL endpoint often returns 403 to fresh instances and blocks
+  # processor registration during startup. Wikipedia already covers encyclopedia
+  # results; leave Wikidata off unless you have verified SPARQL access.
+  - name: wikidata
+    disabled: true
+
+  # News engines. Reached only when the freshness router flags a question as
+  # news-like, which adds the 'news' category to the query.
+  - name: bing news
+    disabled: false
+  - name: google news
+    disabled: false
+
+  # Image, video, music and social engines are pointless here: ATOZAS extracts
+  # article text and cannot cite a video. Disabling them removes upstream
+  # requests whose results would be discarded.
+  - name: qwant images
+    disabled: true
+  - name: youtube
+    disabled: true
+  - name: soundcloud
+    disabled: true
+  - name: reddit
+    disabled: true

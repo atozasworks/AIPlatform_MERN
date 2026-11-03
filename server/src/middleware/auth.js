@@ -23,6 +23,7 @@ export const requireAuth = asyncHandler(async (req, _res, next) => {
   if (!user) throw AppError.unauthorized('Account no longer exists');
 
   req.user = user;
+  req.authExp = payload.exp; // unix seconds — absolute session end for the client
   next();
 });
 
