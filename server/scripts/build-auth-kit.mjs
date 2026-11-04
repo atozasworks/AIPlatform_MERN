@@ -4,11 +4,12 @@
  * The version published to npm ships only TypeScript source and points its
  * package.json at a `dist/` that was never included in the tarball, so a plain
  * `import 'atozas-auth-kit-express'` fails out of the box. This script compiles
- * the package with its own tsup config on install and rewrites its entry points
- * to the emitted files (tsup names the CJS bundle `index.js` and the ESM bundle
- * `index.mjs`, which the shipped `exports` map does not match).
+ * the package on install and rewrites its entry points to the emitted files.
  *
- * The compile must succeed: the API imports dist/index.mjs at boot.
+ * Production `npm ci --omit=dev` has no tsup. npx cannot load the kit's own
+ * tsup.config.ts because that file `import`s `tsup` from the kit directory.
+ * Compile with a local config that does not import tsup, after ensuring a
+ * tsup binary exists next to the kit or the app.
  */
 import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -16,10 +17,9 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const PKG = 'atozas-auth-kit-express';
-// Resolve the install dir directly: the package's `exports` map omits
-// `./package.json`, so `require.resolve` cannot be used before it is fixed.
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkgDir = path.join(projectRoot, 'node_modules', PKG);
+const tsupConfig = path.join(projectRoot, 'scripts', 'auth-kit-tsup.config.mjs');
 
 if (!existsSync(path.join(pkgDir, 'package.json'))) {
   console.warn(`[build-auth-kit] ${PKG} is not installed; skipping.`);
@@ -27,18 +27,14 @@ if (!existsSync(path.join(pkgDir, 'package.json'))) {
 }
 
 try {
+  const distJs = path.join(pkgDir, 'dist', 'index.js');
   const distEsm = path.join(pkgDir, 'dist', 'index.mjs');
-  if (!existsSync(distEsm)) {
+  if (!existsSync(distEsm) && !existsSync(distJs)) {
     console.log(`[build-auth-kit] Compiling ${PKG} (no dist found)...`);
-    try {
-      compileWithTsup(pkgDir);
-    } catch (err) {
-      if (!existsSync(distEsm)) throw err;
-      console.warn(`[build-auth-kit] tsup exited after emitting JS; ignoring declaration error.`);
-    }
+    compileWithTsup(pkgDir);
   }
-  if (!existsSync(distEsm)) {
-    throw new Error(`${PKG} dist/index.mjs is still missing after compile`);
+  if (!existsSync(distEsm) && !existsSync(distJs)) {
+    throw new Error(`${PKG} dist/index.js is still missing after compile`);
   }
   patchEntryPoints(pkgDir);
   console.log(`[build-auth-kit] ${PKG} is ready.`);
@@ -56,29 +52,35 @@ function tsupBin(root) {
 }
 
 function compileWithTsup(dir) {
-  const local = tsupBin(projectRoot);
-  if (local) {
-    execFileSync(local, ['--no-dts'], { cwd: dir, stdio: 'inherit' });
-    return;
+  let bin = tsupBin(projectRoot) || tsupBin(dir);
+  if (!bin) {
+    console.log('[build-auth-kit] Installing tsup into the auth kit (production install has no compiler)...');
+    execSync(
+      'npm install --no-save --no-package-lock --no-audit --no-fund tsup@8.5.1 typescript@5.9.3',
+      { cwd: dir, stdio: 'inherit' },
+    );
+    bin = tsupBin(dir);
   }
-  // Production `npm ci --omit=dev` has no tsup. Pin 8.x so npx does not
-  // fetch tsup 9, which cannot resolve typescript from a sibling install.
-  execSync(
-    'npx --yes --package typescript@5.9.3 --package tsup@8.5.1 tsup --no-dts',
-    { cwd: dir, stdio: 'inherit' },
-  );
+  if (!bin) {
+    throw new Error('tsup is not installed');
+  }
+  execFileSync(bin, ['--config', tsupConfig, '--no-dts'], {
+    cwd: dir,
+    stdio: 'inherit',
+  });
 }
 
 function patchEntryPoints(dir) {
   const pkgJsonPath = path.join(dir, 'package.json');
   const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf8'));
-  pkg.main = './dist/index.js';
-  pkg.module = './dist/index.mjs';
+  const hasEsm = existsSync(path.join(dir, 'dist', 'index.mjs'));
+  const hasCjs = existsSync(path.join(dir, 'dist', 'index.js'));
+  if (hasCjs) pkg.main = './dist/index.js';
+  if (hasEsm) pkg.module = './dist/index.mjs';
   pkg.exports = {
     '.': {
-      types: './dist/index.d.ts',
-      import: './dist/index.mjs',
-      require: './dist/index.js',
+      ...(hasEsm ? { import: './dist/index.mjs' } : {}),
+      ...(hasCjs ? { require: './dist/index.js', default: './dist/index.js' } : { default: './dist/index.mjs' }),
     },
   };
   writeFileSync(pkgJsonPath, `${JSON.stringify(pkg, null, 2)}\n`);
