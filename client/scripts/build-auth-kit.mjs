@@ -35,14 +35,18 @@ try {
     const local = existsSync(win) ? win : existsSync(unix) ? unix : '';
     // Skip .d.ts: the kit's tsconfig asks for @types/react-dom, which this
     // app does not install. Vite only needs the JS/CSS bundles.
-    const dtsOff = ['--dts', 'false'];
-    if (local) {
-      execFileSync(local, dtsOff, { cwd: pkgDir, stdio: 'inherit' });
-    } else {
-      execSync(
-        'npx --yes --package typescript@5.9.3 --package tsup@8.5.1 tsup --dts false',
-        { cwd: pkgDir, stdio: 'inherit' },
-      );
+    try {
+      if (local) {
+        execFileSync(local, ['--no-dts'], { cwd: pkgDir, stdio: 'inherit' });
+      } else {
+        execSync(
+          'npx --yes --package typescript@5.9.3 --package tsup@8.5.1 tsup --no-dts',
+          { cwd: pkgDir, stdio: 'inherit' },
+        );
+      }
+    } catch (err) {
+      if (!existsSync(distEsm)) throw err;
+      console.warn(`[build-auth-kit] tsup exited after emitting JS; ignoring declaration error.`);
     }
   }
   if (!existsSync(distEsm)) {

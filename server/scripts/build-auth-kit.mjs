@@ -30,7 +30,12 @@ try {
   const distEsm = path.join(pkgDir, 'dist', 'index.mjs');
   if (!existsSync(distEsm)) {
     console.log(`[build-auth-kit] Compiling ${PKG} (no dist found)...`);
-    compileWithTsup(pkgDir);
+    try {
+      compileWithTsup(pkgDir);
+    } catch (err) {
+      if (!existsSync(distEsm)) throw err;
+      console.warn(`[build-auth-kit] tsup exited after emitting JS; ignoring declaration error.`);
+    }
   }
   if (!existsSync(distEsm)) {
     throw new Error(`${PKG} dist/index.mjs is still missing after compile`);
@@ -51,16 +56,15 @@ function tsupBin(root) {
 }
 
 function compileWithTsup(dir) {
-  const dtsOff = ['--dts', 'false'];
   const local = tsupBin(projectRoot);
   if (local) {
-    execFileSync(local, dtsOff, { cwd: dir, stdio: 'inherit' });
+    execFileSync(local, ['--no-dts'], { cwd: dir, stdio: 'inherit' });
     return;
   }
   // Production `npm ci --omit=dev` has no tsup. Pin 8.x so npx does not
   // fetch tsup 9, which cannot resolve typescript from a sibling install.
   execSync(
-    'npx --yes --package typescript@5.9.3 --package tsup@8.5.1 tsup --dts false',
+    'npx --yes --package typescript@5.9.3 --package tsup@8.5.1 tsup --no-dts',
     { cwd: dir, stdio: 'inherit' },
   );
 }
