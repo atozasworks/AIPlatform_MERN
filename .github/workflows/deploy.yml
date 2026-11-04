@@ -33,8 +33,6 @@
 #                            testatozas: /home/<test-user>/htdocs/testatozasai.testatozas.in
 #
 # ── GitHub Environment variables (Settings → Environments → Variables) ──
-#   PUBLIC_URL                       production https://atozasai.com
-#                                    testatozas https://testatozasai.testatozas.in
 #   VITE_GOOGLE_ALLOWED_ORIGINS      production https://atozasai.com,https://www.atozasai.com
 #                                    testatozas https://testatozasai.testatozas.in
 #   REQUIRE_API_READY                true or false. true also requires /api/health/ready
@@ -315,7 +313,6 @@ jobs:
     timeout-minutes: 40
     environment: ${{ github.ref_name == 'atozasaimain_testCICD_final_deploy' && 'production' || 'testatozas' }}
     env:
-      PUBLIC_URL: ${{ vars.PUBLIC_URL }}
       REQUIRE_API_READY: ${{ vars.REQUIRE_API_READY || 'false' }}
       PM2_API_NAME: ${{ vars.PM2_API_NAME || (github.ref_name == 'atozasaimain_testCICD_final_deploy' && 'atozas-api' || 'atozas-test-api') }}
       PM2_WORKER_NAME: ${{ vars.PM2_WORKER_NAME || (github.ref_name == 'atozasaimain_testCICD_final_deploy' && 'atozas-worker' || 'atozas-test-worker') }}
@@ -444,10 +441,6 @@ jobs:
             atozasai_testCICD_testSite_deploy|atozasaimain_testCICD_final_deploy) ;;
             *) echo "Refusing to deploy ${GITHUB_REF_NAME}"; exit 1 ;;
           esac
-          if [ -z "${PUBLIC_URL}" ]; then
-            echo "PUBLIC_URL is not set on this GitHub Environment."
-            exit 1
-          fi
 
       - name: Resolve deploy scope
         id: scope
@@ -491,7 +484,6 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         env:
           APP_DIR: ${{ secrets.VPS_APP_DIR }}
-          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
           DEPLOY_FRONTEND: ${{ steps.scope.outputs.frontend }}
           DEPLOY_BACKEND: ${{ steps.scope.outputs.backend }}
           RELEASE_SHA: ${{ github.sha }}
@@ -503,7 +495,7 @@ jobs:
           port: ${{ secrets.VPS_PORT || 22 }}
           command_timeout: 10m
           script_stop: true
-          envs: APP_DIR,PUBLIC_URL,DEPLOY_FRONTEND,DEPLOY_BACKEND,RELEASE_SHA
+          envs: APP_DIR,DEPLOY_FRONTEND,DEPLOY_BACKEND,RELEASE_SHA
           script: |
             set -eu
             case "${APP_DIR}" in
@@ -525,10 +517,6 @@ jobs:
             if [ -n "${missing}" ]; then
               echo "server/.env is missing values for:${missing}"
               exit 1
-            fi
-            host="$(printf '%s' "${PUBLIC_URL}" | sed -E 's#https?://([^/]+).*#\1#')"
-            if ! grep -E '^FRONTEND_URL=' "${APP_DIR}/server/.env" | grep -q "${host}"; then
-              echo "WARNING: FRONTEND_URL does not contain ${host}. Cookies and CORS for this site will be wrong until server/.env matches PUBLIC_URL."
             fi
             command -v rsync >/dev/null 2>&1 || { echo "rsync is not installed on the VPS"; exit 1; }
             command -v tar >/dev/null 2>&1 || { echo "tar is not installed on the VPS"; exit 1; }
@@ -605,7 +593,6 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         env:
           APP_DIR: ${{ secrets.VPS_APP_DIR }}
-          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
           DEPLOY_FRONTEND: ${{ steps.scope.outputs.frontend }}
           DEPLOY_BACKEND: ${{ steps.scope.outputs.backend }}
           PM2_API_NAME: ${{ env.PM2_API_NAME }}
@@ -619,10 +606,9 @@ jobs:
           port: ${{ secrets.VPS_PORT || 22 }}
           command_timeout: 30m
           script_stop: true
-          envs: APP_DIR,PUBLIC_URL,DEPLOY_FRONTEND,DEPLOY_BACKEND,PM2_API_NAME,PM2_WORKER_NAME,REQUIRE_API_READY
+          envs: APP_DIR,DEPLOY_FRONTEND,DEPLOY_BACKEND,PM2_API_NAME,PM2_WORKER_NAME,REQUIRE_API_READY
           script: |
             set -eu
-            PUBLIC_URL="${PUBLIC_URL%/}"
             STAGE="${APP_DIR}/.deploy-staging/incoming"
             export PATH="/usr/local/bin:/usr/bin:/bin:${PATH}"
             if [ -s "${HOME}/.nvm/nvm.sh" ]; then
@@ -739,33 +725,30 @@ jobs:
             done
             [ "${live_ok}" = "1" ] || rollback
 
-            public_code="$(curl -sL -o /dev/null -w '%{http_code}' --max-time 20 "${PUBLIC_URL}/api/health/live" || true)"
-            echo "Public liveness HTTP ${public_code}"
-            [ "${public_code}" = "200" ] || rollback
-
-            home_code="$(curl -sL -o /dev/null -w '%{http_code}' --max-time 20 "${PUBLIC_URL}/" || true)"
+            origin="http://127.0.0.1:${port}"
+            home_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${origin}/" || true)"
             echo "Homepage HTTP ${home_code}"
             [ "${home_code}" = "200" ] || rollback
 
-            admin_code="$(curl -sL -o /dev/null -w '%{http_code}' --max-time 20 "${PUBLIC_URL}/admin/" || true)"
+            admin_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${origin}/admin/" || true)"
             echo "Admin HTTP ${admin_code}"
             [ "${admin_code}" = "200" ] || rollback
 
-            elapsed="$(curl -sL -o /dev/null -w '%{time_total}' --max-time 20 "${PUBLIC_URL}/api/health/live" || echo 99)"
+            elapsed="$(curl -s -o /dev/null -w '%{time_total}' --max-time 20 "${origin}/api/health/live" || echo 99)"
             echo "Health response time ${elapsed}s"
             node -e "if (Number(process.argv[1]) > 5) process.exit(1)" "${elapsed}" || rollback
 
             if [ "${REQUIRE_API_READY}" = "true" ]; then
-              ready_code="$(curl -sL -o /dev/null -w '%{http_code}' --max-time 20 "${PUBLIC_URL}/api/health/ready" || true)"
+              ready_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${origin}/api/health/ready" || true)"
               echo "Readiness HTTP ${ready_code}"
               [ "${ready_code}" = "200" ] || rollback
             else
-              ready_code="$(curl -sL -o /dev/null -w '%{http_code}' --max-time 20 "${PUBLIC_URL}/api/health/ready" || true)"
+              ready_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${origin}/api/health/ready" || true)"
               echo "Readiness HTTP ${ready_code} (not required)"
             fi
 
             rm -rf "${APP_DIR}/.deploy-staging"
-            echo "DEPLOY_OK ${PUBLIC_URL}"
+            echo "DEPLOY_OK ${origin}"
 
   lighthouse:
     name: Lighthouse audit
@@ -777,11 +760,13 @@ jobs:
     environment: ${{ github.ref_name == 'atozasaimain_testCICD_final_deploy' && 'production' || 'testatozas' }}
     steps:
       - name: Lighthouse
-        env:
-          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
         run: |
           set -euo pipefail
-          PUBLIC_URL="${PUBLIC_URL%/}"
+          if [ "${GITHUB_REF_NAME}" = "atozasaimain_testCICD_final_deploy" ]; then
+            site="https://atozasai.com"
+          else
+            site="https://testatozasai.testatozas.in"
+          fi
           chrome=""
           if command -v google-chrome >/dev/null 2>&1; then
             chrome="$(command -v google-chrome)"
@@ -792,7 +777,7 @@ jobs:
             echo "Chrome is not installed on the runner."
             exit 1
           fi
-          npx --yes lighthouse@12.2.1 "${PUBLIC_URL}/" \
+          npx --yes lighthouse@12.2.1 "${site}/" \
             --chrome-path="${chrome}" \
             --chrome-flags="--headless=new --no-sandbox --disable-gpu" \
             --only-categories=performance,accessibility,best-practices,seo \
