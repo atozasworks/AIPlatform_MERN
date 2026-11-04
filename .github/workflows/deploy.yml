@@ -12,7 +12,8 @@
 #   <VPS_APP_DIR>/server/dist           chat SPA  (client Vite build)
 #   <VPS_APP_DIR>/server/admin-dist     admin SPA (admin Vite build, served at /admin)
 #   <VPS_APP_DIR>/deploy                PM2 ecosystem and ops scripts
-#   <VPS_APP_DIR>/server/.env           NEVER uploaded. It already lives on each site.
+#   <VPS_APP_DIR>/server/.env           Test branch: non-empty testatozas secrets are merged in.
+#                                      Production: never uploaded. The file already on the VPS stays.
 #   <VPS_APP_DIR>/server/src/.env       NEVER uploaded.
 #   models/, .llamacpp-cpu/, node_modules/, uploads/ stay on the VPS.
 #
@@ -49,7 +50,9 @@
 # ── server/.env keys ──
 # Every key in server/.env is listed on the deploy job as secrets.<NAME>.
 # Put the values in the GitHub Environment. This file must not contain them.
-# The workflow still does not overwrite server/.env on the VPS.
+# The test branch merges non-empty testatozas secrets into the test site's
+# server/.env. Blank secrets do not erase a value already on the server.
+# The production branch does not write server/.env.
 
 name: CI/CD Deploy to Hostinger VPS
 
@@ -313,6 +316,7 @@ jobs:
     timeout-minutes: 40
     environment: ${{ github.ref_name == 'atozasaimain_testCICD_final_deploy' && 'production' || 'testatozas' }}
     env:
+      APPLY_SITE_ENV: ${{ github.ref_name == 'atozasai_testCICD_testSite_deploy' && 'true' || 'false' }}
       REQUIRE_API_READY: ${{ vars.REQUIRE_API_READY || 'false' }}
       PM2_API_NAME: ${{ vars.PM2_API_NAME || (github.ref_name == 'atozasaimain_testCICD_final_deploy' && 'atozas-api' || 'atozas-test-api') }}
       PM2_WORKER_NAME: ${{ vars.PM2_WORKER_NAME || (github.ref_name == 'atozasaimain_testCICD_final_deploy' && 'atozas-worker' || 'atozas-test-worker') }}
@@ -463,6 +467,56 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Stage testatozas server env
+        if: github.ref_name == 'atozasai_testCICD_testSite_deploy'
+        run: |
+          set -euo pipefail
+          node <<'EOF'
+          const fs = require('node:fs');
+          const keys = `
+          NODE_ENV PORT BACKEND_URL FRONTEND_URL CORS_ORIGINS MONGO_URI REDIS_URL REDIS_PREFIX
+          JWT_ACCESS_SECRET JWT_REFRESH_SECRET JWT_ACCESS_TTL JWT_REFRESH_TTL
+          COOKIE_DOMAIN COOKIE_SECURE COOKIE_SAMESITE
+          EMAIL_ENABLED SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASS MAIL_FROM
+          OTP_LENGTH OTP_TTL_MINUTES OTP_MAX_ATTEMPTS OTP_RESEND_COOLDOWN_SECONDS GOOGLE_CLIENT_ID
+          DEFAULT_AI_PROVIDER DEFAULT_PROMPT_PROFILE
+          LLAMACPP_ENABLED LLAMACPP_BASE_URL LLAMACPP_API_KEY LLAMACPP_MODELS LLAMACPP_MODEL
+          LLAMACPP_MODELS_MAX LLAMACPP_CATALOG_TTL_MS LLAMACPP_CONTEXT_WINDOW
+          LLAMACPP_REQUEST_TIMEOUT_MS LLAMACPP_THINKING
+          EMBEDDING_ENABLED EMBEDDING_BASE_URL EMBEDDING_API_KEY EMBEDDING_MODEL EMBEDDING_DIMENSIONS
+          EMBEDDING_BATCH_SIZE EMBEDDING_REQUEST_TIMEOUT_MS EMBEDDING_QUERY_PREFIX EMBEDDING_PASSAGE_PREFIX
+          GPU_ENABLED GPU_BASE_URL GPU_API_KEY GPU_MODEL SELF_HOSTED_ALLOWED_HOSTS
+          MAX_ACTIVE_REQUESTS_PER_USER MAX_REQUESTS_PER_MINUTE MAX_REQUESTS_PER_HOUR MAX_QUEUE_SIZE
+          MAX_PROMPT_TOKENS MAX_OUTPUT_TOKENS_NORMAL MAX_OUTPUT_TOKENS_DETAILED
+          MAX_CONVERSATION_CONTEXT_TOKENS MAX_RETRIEVAL_CONTEXT_TOKENS
+          LLM_WORKER_CONCURRENCY QUEUE_STALE_MS STREAM_IDLE_TIMEOUT_MS SSE_HEARTBEAT_MS JOB_ATTEMPTS
+          BREAKER_FAILURE_THRESHOLD BREAKER_WINDOW_MS BREAKER_COOLDOWN_MS
+          RAG_ENABLED RAG_TOP_K RAG_CANDIDATE_LIMIT RAG_MIN_SCORE RAG_CHUNK_TOKENS
+          RAG_CHUNK_OVERLAP_TOKENS RAG_VECTOR_WEIGHT RAG_MAX_UPLOAD_BYTES RAG_MAX_DOCUMENTS_PER_USER
+          RAG_VECTOR_CACHE_MAX_CHUNKS
+          WEB_RETRIEVAL_ENABLED SEARXNG_BASE_URL WEB_ALLOWED_DOMAINS WEB_MAX_FETCH WEB_TOP_PASSAGES
+          WEB_TOTAL_BUDGET_MS WEB_RERANK_MODE WEB_MAX_RERANK_PASSAGES
+          RATE_LIMIT_WINDOW_MS RATE_LIMIT_MAX AUTH_RATE_LIMIT_MAX JSON_BODY_LIMIT
+          MODEL_SHA256_QWEN3_14B MODEL_SHA256_EMBEDDING
+          ATOZAS_SSO_ENABLED ATOZAS_ISSUER ATOZAS_CLIENT_ID ATOZAS_CLIENT_SECRET ATOZAS_REDIRECT_URI
+          ATOZAS_SCOPE ATOZAS_AUTHORIZE_URL ATOZAS_TOKEN_URL ATOZAS_USERINFO_URL ATOZAS_REVOKE_URL
+          ATOZAS_TOKEN_AUTH_STYLE ATOZAS_HOMEPAGE_KEY ATOZAS_SESSION_COOKIE_NAME ATOZAS_SESSION_SECRET
+          ATOZAS_SESSION_MAX_AGE_DAYS ATOZAS_SESSION_COLLECTION ATOZAS_COOKIE_SECURE
+          ATOZAS_COOKIE_SAMESITE ATOZAS_AUTO_REDIRECT
+          `.trim().split(/\s+/);
+          const out = {};
+          for (const key of keys) {
+            const value = process.env[key];
+            if (value !== undefined && value !== '') out[key] = value;
+          }
+          if (Object.keys(out).length === 0) {
+            console.error('The testatozas environment has no server env values to apply.');
+            process.exit(1);
+          }
+          fs.writeFileSync('site.env.json', JSON.stringify(out), { mode: 0o600 });
+          console.log(`Staged ${Object.keys(out).length} non-empty testatozas values for the test site.`);
+          EOF
+
       - name: Download frontend builds
         if: steps.scope.outputs.frontend == 'true'
         uses: actions/download-artifact@v4
@@ -487,6 +541,7 @@ jobs:
           DEPLOY_FRONTEND: ${{ steps.scope.outputs.frontend }}
           DEPLOY_BACKEND: ${{ steps.scope.outputs.backend }}
           RELEASE_SHA: ${{ github.sha }}
+          APPLY_SITE_ENV: ${{ env.APPLY_SITE_ENV }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -495,7 +550,7 @@ jobs:
           port: ${{ secrets.VPS_PORT || 22 }}
           command_timeout: 10m
           script_stop: false
-          envs: APP_DIR,DEPLOY_FRONTEND,DEPLOY_BACKEND,RELEASE_SHA
+          envs: APP_DIR,DEPLOY_FRONTEND,DEPLOY_BACKEND,RELEASE_SHA,APPLY_SITE_ENV
           script: |
             export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
             set -eu
@@ -525,17 +580,19 @@ jobs:
                 ;;
             esac
             [ -d "${APP_DIR}" ] || { echo "Document root does not exist: ${APP_DIR}"; exit 1; }
-            [ -f "${APP_DIR}/server/.env" ] || { echo "server/.env is missing. Create it on the VPS before deploying. This workflow will not write it."; exit 1; }
-            missing=""
-            for key in MONGO_URI JWT_ACCESS_SECRET JWT_REFRESH_SECRET PORT FRONTEND_URL BACKEND_URL; do
-              value="$(grep -E "^${key}=" "${APP_DIR}/server/.env" | tail -n 1 | cut -d= -f2- | tr -d '\r"'"'"' ' || true)"
-              if [ -z "${value}" ]; then
-                missing="${missing} ${key}"
+            [ -f "${APP_DIR}/server/.env" ] || { echo "server/.env is missing. Create it on the VPS before deploying."; exit 1; }
+            if [ "${APPLY_SITE_ENV}" != "true" ]; then
+              missing=""
+              for key in MONGO_URI JWT_ACCESS_SECRET JWT_REFRESH_SECRET PORT FRONTEND_URL BACKEND_URL; do
+                value="$(grep -E "^${key}=" "${APP_DIR}/server/.env" | tail -n 1 | cut -d= -f2- | tr -d '\r"'"'"' ' || true)"
+                if [ -z "${value}" ]; then
+                  missing="${missing} ${key}"
+                fi
+              done
+              if [ -n "${missing}" ]; then
+                echo "server/.env is missing values for:${missing}"
+                exit 1
               fi
-            done
-            if [ -n "${missing}" ]; then
-              echo "server/.env is missing values for:${missing}"
-              exit 1
             fi
             command -v rsync >/dev/null 2>&1 || { echo "rsync is not installed on the VPS"; exit 1; }
             command -v tar >/dev/null 2>&1 || { echo "tar is not installed on the VPS"; exit 1; }
@@ -586,6 +643,20 @@ jobs:
           source: "server,deploy,package.json,package-lock.json"
           target: ${{ secrets.VPS_APP_DIR }}/.deploy-staging/incoming
 
+      - name: Upload testatozas server env
+        if: github.ref_name == 'atozasai_testCICD_testSite_deploy'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_SSH_FINGERPRINT }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          timeout: 5m
+          overwrite: true
+          source: site.env.json
+          target: ${{ secrets.VPS_APP_DIR }}/.deploy-staging/incoming
+
       - name: Upload frontend builds to staging
         if: steps.scope.outputs.frontend == 'true'
         uses: appleboy/scp-action@v0.1.7
@@ -609,6 +680,7 @@ jobs:
           PM2_API_NAME: ${{ env.PM2_API_NAME }}
           PM2_WORKER_NAME: ${{ env.PM2_WORKER_NAME }}
           REQUIRE_API_READY: ${{ env.REQUIRE_API_READY }}
+          APPLY_SITE_ENV: ${{ env.APPLY_SITE_ENV }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -617,7 +689,7 @@ jobs:
           port: ${{ secrets.VPS_PORT || 22 }}
           command_timeout: 30m
           script_stop: false
-          envs: APP_DIR,DEPLOY_FRONTEND,DEPLOY_BACKEND,PM2_API_NAME,PM2_WORKER_NAME,REQUIRE_API_READY
+          envs: APP_DIR,DEPLOY_FRONTEND,DEPLOY_BACKEND,PM2_API_NAME,PM2_WORKER_NAME,REQUIRE_API_READY,APPLY_SITE_ENV
           script: |
             export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
             # nvm.sh returns non-zero during load. set -e would turn that into exit 127.
@@ -681,6 +753,16 @@ jobs:
               pm2 start "${ECOSYSTEM}" --env production --update-env
             }
 
+            apply_site_env() {
+              if [ "${APPLY_SITE_ENV}" != "true" ]; then
+                return 0
+              fi
+              [ -f "${STAGE}/site.env.json" ] || { echo "testatozas env file was not uploaded"; return 1; }
+              SITE_ENV_FILE="${STAGE}/site.env.json" node -e 'const fs=require("node:fs"); const path=require("node:path"); const incoming=JSON.parse(fs.readFileSync(process.env.SITE_ENV_FILE,"utf8")); const envPath=path.join(process.env.APP_DIR,"server/.env"); const quote=(value)=>"\""+String(value).replace(/\\/g,"\\\\").replace(/"/g,"\\\"").replace(/\r/g,"\\r").replace(/\n/g,"\\n")+"\""; const lines=fs.existsSync(envPath)?fs.readFileSync(envPath,"utf8").split(/\r?\n/):[]; const seen=new Set(); const next=lines.map((line)=>{ const m=/^([A-Za-z_][A-Za-z0-9_]*)=/.exec(line); if(!m||!Object.prototype.hasOwnProperty.call(incoming,m[1])) return line; seen.add(m[1]); return m[1]+"="+quote(incoming[m[1]]); }); for (const [key,value] of Object.entries(incoming)) { if(!seen.has(key)) next.push(key+"="+quote(value)); } while(next.length&&next[next.length-1]==="") next.pop(); fs.writeFileSync(envPath, next.join("\n")+"\n"); console.log("server/.env updated from testatozas ("+Object.keys(incoming).length+" keys).");'
+              chmod 600 "${APP_DIR}/server/.env"
+              rm -f "${STAGE}/site.env.json"
+            }
+
             rollback() {
               echo "Deploy failed. Restoring the previous release."
               mkdir -p "${RUNTIME_DIR}"
@@ -734,6 +816,7 @@ jobs:
                 echo "server/node_modules/pm2/lib/ProcessContainerFork.js is missing. The running PM2 daemon cannot spawn the API."
                 rollback
               fi
+              apply_site_env || rollback
               echo "Starting ${PM2_API_NAME} in fork mode."
               restart_app || rollback
               pm2 save || rollback
@@ -752,6 +835,13 @@ jobs:
                 pm2 logs "${PM2_WORKER_NAME}" --lines 30 --nostream || true
                 rollback
               fi
+            fi
+
+            if [ "${APPLY_SITE_ENV}" = "true" ] && [ "${DEPLOY_BACKEND}" != "true" ]; then
+              apply_site_env || exit 1
+              write_ecosystem || exit 1
+              restart_app || exit 1
+              pm2 save || exit 1
             fi
 
             if [ "${DEPLOY_FRONTEND}" = "true" ]; then
