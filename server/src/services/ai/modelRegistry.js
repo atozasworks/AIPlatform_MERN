@@ -89,7 +89,9 @@ export const MODEL_REGISTRY = [
     license: 'Apache-2.0',
     commercialUse: true,
     file: 'Qwen3-Embedding-0.6B-Q8_0.gguf',
-    sha256: process.env.MODEL_SHA256_EMBEDDING || '',
+    sha256:
+      process.env.MODEL_SHA256_EMBEDDING ||
+      '06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439',
     transmitsDataExternally: false,
     role: 'embedding',
   },

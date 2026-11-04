@@ -297,12 +297,12 @@ export const env = {
   /** Server-side usage ceilings. Every value is operator-tunable. */
   limits: {
     maxActiveRequestsPerUser: num(process.env.MAX_ACTIVE_REQUESTS_PER_USER, 1),
-    maxRequestsPerMinute: num(process.env.MAX_REQUESTS_PER_MINUTE, 5),
-    maxRequestsPerHour: num(process.env.MAX_REQUESTS_PER_HOUR, 40),
-    maxQueueSize: num(process.env.MAX_QUEUE_SIZE, 100),
+    maxRequestsPerMinute: num(process.env.MAX_REQUESTS_PER_MINUTE, 60),
+    maxRequestsPerHour: num(process.env.MAX_REQUESTS_PER_HOUR, 600),
+    maxQueueSize: num(process.env.MAX_QUEUE_SIZE, 250),
     maxPromptTokens: num(process.env.MAX_PROMPT_TOKENS, 4000),
-    maxOutputTokensNormal: num(process.env.MAX_OUTPUT_TOKENS_NORMAL, 800),
-    maxOutputTokensDetailed: num(process.env.MAX_OUTPUT_TOKENS_DETAILED, 1500),
+    maxOutputTokensNormal: num(process.env.MAX_OUTPUT_TOKENS_NORMAL, 1200),
+    maxOutputTokensDetailed: num(process.env.MAX_OUTPUT_TOKENS_DETAILED, 2000),
     maxConversationContextTokens: num(process.env.MAX_CONVERSATION_CONTEXT_TOKENS, 6000),
     maxRetrievalContextTokens: num(process.env.MAX_RETRIEVAL_CONTEXT_TOKENS, 3000),
     workerConcurrency: num(process.env.LLM_WORKER_CONCURRENCY, 2),
@@ -326,7 +326,7 @@ export const env = {
     topK: num(process.env.RAG_TOP_K, 6),
     // Candidates pulled from keyword search before vector rescoring.
     candidateLimit: num(process.env.RAG_CANDIDATE_LIMIT, 200),
-    minScore: Number(process.env.RAG_MIN_SCORE ?? 0.72),
+    minScore: Number(process.env.RAG_MIN_SCORE ?? 0.45),
     chunkTokens: num(process.env.RAG_CHUNK_TOKENS, 380),
     chunkOverlapTokens: num(process.env.RAG_CHUNK_OVERLAP_TOKENS, 60),
     // Weight of dense similarity in the hybrid score (rest goes to keyword).
@@ -470,7 +470,7 @@ export const env = {
 
   rateLimit: {
     windowMs: num(process.env.RATE_LIMIT_WINDOW_MS, 60000),
-    max: num(process.env.RATE_LIMIT_MAX, 120),
+    max: num(process.env.RATE_LIMIT_MAX, 300),
     authMax: num(process.env.AUTH_RATE_LIMIT_MAX, 10),
   },
 

@@ -1,0 +1,875 @@
+# CI/CD for ATOZAS AI on the Hostinger VPS (CloudPanel).
+#
+# Branch → GitHub Environment → site
+#   atozasai_testCICD_testSite_deploy  → testatozas  → https://testatozasai.testatozas.in/
+#   atozasaimain_testCICD_final_deploy → production  → https://atozasai.com/
+#
+# GitHub Actions uses the workflow file that is ON the branch you push.
+# This file has to exist on both branches.
+#
+# What is deployed (matches the CloudPanel document root):
+#   <VPS_APP_DIR>/server/src            API and worker source
+#   <VPS_APP_DIR>/server/dist           chat SPA  (client Vite build)
+#   <VPS_APP_DIR>/server/admin-dist     admin SPA (admin Vite build, served at /admin)
+#   <VPS_APP_DIR>/deploy                PM2 ecosystem and ops scripts
+#   <VPS_APP_DIR>/server/.env           NEVER uploaded. It already lives on each site.
+#   <VPS_APP_DIR>/server/src/.env       NEVER uploaded.
+#   models/, .llamacpp-cpu/, node_modules/, uploads/ stay on the VPS.
+#
+# Node NODE_ENV is "production" on both sites. "testatozas" and "production"
+# are GitHub Environment names, not Node environments.
+#
+# ── GitHub Environment secrets (create the same names in testatozas AND production) ──
+#   VPS_HOST                 SSH host. This VPS is 200.97.161.115 if both sites share it.
+#   VPS_PORT                 SSH port. Use 22 when Hostinger is on the default port.
+#   VPS_USER                 CloudPanel site user. Production screenshot user is atozasai.
+#                            Use the test site's own user for testatozas. Do not use root:
+#                            PM2 must be the site user's PM2.
+#   VPS_SSH_KEY              Private key (full PEM, including BEGIN/END lines).
+#   VPS_SSH_FINGERPRINT      Optional. ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+#                            Value looks like SHA256:xxxx. Leave unset to skip pinning.
+#   VPS_APP_DIR              Document root.
+#                            production: /home/atozasai/htdocs/atozasai.com
+#                            testatozas: /home/<test-user>/htdocs/testatozasai.testatozas.in
+#
+# ── GitHub Environment variables (Settings → Environments → Variables) ──
+#   PUBLIC_URL                       production https://atozasai.com
+#                                    testatozas https://testatozasai.testatozas.in
+#   VITE_GOOGLE_ALLOWED_ORIGINS      production https://atozasai.com,https://www.atozasai.com
+#                                    testatozas https://testatozasai.testatozas.in
+#   REQUIRE_API_READY                true or false. true also requires /api/health/ready
+#                                    (Mongo, Redis, and llama-server). Default false.
+#   PM2_API_NAME                     Optional. Default atozas-api on production,
+#                                    atozas-test-api on the test branch.
+#   PM2_WORKER_NAME                  Optional. Default atozas-worker on production,
+#                                    atozas-test-worker on the test branch.
+#
+# ── client/.env (build time, deploy job does not upload client/.env) ──
+#   VITE_GOOGLE_CLIENT_ID            secret. Same value as GOOGLE_CLIENT_ID.
+#   VITE_GOOGLE_ALLOWED_ORIGINS      variable. See above.
+#
+# ── server/.env keys ──
+# Every key in server/.env is listed on the deploy job as secrets.<NAME>.
+# Put the values in the GitHub Environment. This file must not contain them.
+# The workflow still does not overwrite server/.env on the VPS.
+
+name: CI/CD Deploy to Hostinger VPS
+
+on:
+  push:
+    branches:
+      - atozasai_testCICD_testSite_deploy
+      - atozasaimain_testCICD_final_deploy
+  workflow_dispatch:
+    inputs:
+      deploy_frontend:
+        description: "Build and upload the chat and admin SPAs"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      deploy_backend:
+        description: "Upload the API, install dependencies, and reload PM2"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Paths filter
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            frontend:
+              - 'client/**'
+              - 'admin/**'
+              - '.github/workflows/deploy.yml'
+            backend:
+              - 'server/**'
+              - 'deploy/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/deploy.yml'
+
+  quality_gates:
+    name: Quality gates
+    runs-on: ubuntu-latest
+    needs: changes
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+            admin/package-lock.json
+
+      - name: Reject tracked secrets
+        run: |
+          set -euo pipefail
+          tracked="$(git ls-files | grep -E '(^|/)\.env$|(^|/).*\.pem$|(^|/)id_rsa$' || true)"
+          if [ -n "$tracked" ]; then
+            echo "Tracked secret material:"
+            printf '%s\n' "$tracked"
+            exit 1
+          fi
+          if git grep -I -n -E 'BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY' -- . >/dev/null; then
+            echo "A private key is committed."
+            exit 1
+          fi
+
+      - name: Lint
+        run: |
+          set -euo pipefail
+          if [ -f eslint.config.js ] || [ -f eslint.config.mjs ] || [ -f .eslintrc.json ] || [ -f .eslintrc.cjs ]; then
+            npx eslint --fix "server/src/**/*.js" "client/src/**/*.{js,jsx}" "admin/src/**/*.{js,jsx}"
+            if ! git diff --quiet; then
+              echo "ESLint --fix changed files. Commit those fixes, then push again."
+              git diff --stat
+              exit 1
+            fi
+          else
+            echo "No ESLint config is committed. Syntax check is the lint gate."
+          fi
+          find server/src -name '*.js' -print0 | xargs -0 -n1 node --check
+          find server/scripts -name '*.mjs' -print0 | xargs -0 -n1 node --check
+
+      - name: Install server dependencies
+        working-directory: server
+        run: npm ci --no-audit --no-fund
+
+      - name: Automated tests and API logic tests
+        working-directory: server
+        env:
+          NODE_ENV: test
+          LOG_LEVEL: silent
+        run: npm test
+
+      - name: Database validation
+        run: |
+          set -euo pipefail
+          if [ -f prisma/schema.prisma ] || [ -f server/prisma/schema.prisma ]; then
+            npx prisma validate
+          else
+            echo "This API uses Mongoose, not Prisma. There is no Prisma schema to migrate."
+          fi
+          node -e "const p=require('./server/package.json'); if(!p.dependencies || !p.dependencies.mongoose){console.error('mongoose is not a server dependency'); process.exit(1)}"
+          node --check server/src/config/db.js
+          for key in MONGO_URI JWT_ACCESS_SECRET JWT_REFRESH_SECRET; do
+            grep -qE "^${key}=" server/.env.example || { echo "server/.env.example is missing ${key}"; exit 1; }
+          done
+          echo "Mongoose contract and server/.env.example required keys: PASS"
+
+      - name: Security audit
+        run: |
+          set -euo pipefail
+          fail=0
+          for app in server client admin; do
+            echo "::group::npm audit ${app}"
+            if ! npm --prefix "$app" audit --omit=dev --audit-level=critical; then
+              echo "${app} has a critical advisory."
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$fail"
+
+      - name: Docker validation
+        working-directory: deploy/searxng
+        env:
+          SEARXNG_SECRET: ci-validation-only
+        run: docker compose config --quiet
+
+  build_frontend:
+    name: Production build
+    needs: quality_gates
+    if: needs.quality_gates.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ github.ref_name == 'atozasaimain_testCICD_final_deploy' && 'production' || 'testatozas' }}
+    env:
+      CI: "true"
+      VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+      VITE_GOOGLE_ALLOWED_ORIGINS: ${{ vars.VITE_GOOGLE_ALLOWED_ORIGINS }}
+    steps:
+      - name: Confirm deploy branch
+        run: |
+          set -euo pipefail
+          case "${GITHUB_REF_NAME}" in
+            atozasai_testCICD_testSite_deploy|atozasaimain_testCICD_final_deploy) ;;
+            *) echo "Refusing to build for ${GITHUB_REF_NAME}"; exit 1 ;;
+          esac
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            client/package-lock.json
+            admin/package-lock.json
+
+      - name: Frontend build configuration
+        run: |
+          if [ -z "${VITE_GOOGLE_CLIENT_ID}" ]; then
+            echo "::warning::VITE_GOOGLE_CLIENT_ID is empty for this environment. Google sign-in will be hidden."
+          fi
+          if [ -z "${VITE_GOOGLE_ALLOWED_ORIGINS}" ]; then
+            echo "::warning::VITE_GOOGLE_ALLOWED_ORIGINS is empty. Set it on the GitHub Environment before relying on the Google button."
+          fi
+
+      - name: Install and build chat app
+        working-directory: client
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          test -f dist/index.html
+
+      - name: Install and build admin app
+        working-directory: admin
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+          test -f dist/index.html
+
+      - name: Performance budget
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'EOF'
+          import { readdirSync, statSync } from 'node:fs';
+          import path from 'node:path';
+          function walk(dir) {
+            let total = 0;
+            for (const entry of readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name);
+              total += entry.isDirectory() ? walk(full) : statSync(full).size;
+            }
+            return total;
+          }
+          const client = walk('client/dist');
+          const admin = walk('admin/dist');
+          const mb = (n) => (n / 1024 / 1024).toFixed(2);
+          console.log(`client dist ${mb(client)} MB`);
+          console.log(`admin dist ${mb(admin)} MB`);
+          if (client > 20 * 1024 * 1024) {
+            console.error('client/dist exceeds the 20 MB budget');
+            process.exit(1);
+          }
+          if (admin > 10 * 1024 * 1024) {
+            console.error('admin/dist exceeds the 10 MB budget');
+            process.exit(1);
+          }
+          EOF
+
+      - name: Upload builds
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          retention-days: 3
+          path: |
+            client/dist
+            admin/dist
+
+  deploy:
+    name: Deploy to Hostinger
+    needs: [changes, quality_gates, build_frontend]
+    if: always() && needs.quality_gates.result == 'success' && needs.build_frontend.result == 'success' && ((github.event_name == 'push' && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.backend == 'true')) || (github.event_name == 'workflow_dispatch' && (inputs.deploy_frontend == 'true' || inputs.deploy_backend == 'true')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: ${{ github.ref_name == 'atozasaimain_testCICD_final_deploy' && 'production' || 'testatozas' }}
+    env:
+      PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+      REQUIRE_API_READY: ${{ vars.REQUIRE_API_READY || 'false' }}
+      PM2_API_NAME: ${{ vars.PM2_API_NAME || (github.ref_name == 'atozasaimain_testCICD_final_deploy' && 'atozas-api' || 'atozas-test-api') }}
+      PM2_WORKER_NAME: ${{ vars.PM2_WORKER_NAME || (github.ref_name == 'atozasaimain_testCICD_final_deploy' && 'atozas-worker' || 'atozas-test-worker') }}
+      # client/.env
+      VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+      VITE_GOOGLE_ALLOWED_ORIGINS: ${{ vars.VITE_GOOGLE_ALLOWED_ORIGINS }}
+      # server/.env — values come from the GitHub Environment, not from this file
+      NODE_ENV: ${{ secrets.NODE_ENV }}
+      PORT: ${{ secrets.PORT }}
+      BACKEND_URL: ${{ secrets.BACKEND_URL }}
+      FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
+      CORS_ORIGINS: ${{ secrets.CORS_ORIGINS }}
+      MONGO_URI: ${{ secrets.MONGO_URI }}
+      REDIS_URL: ${{ secrets.REDIS_URL }}
+      REDIS_PREFIX: ${{ secrets.REDIS_PREFIX }}
+      JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET }}
+      JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
+      JWT_ACCESS_TTL: ${{ secrets.JWT_ACCESS_TTL }}
+      JWT_REFRESH_TTL: ${{ secrets.JWT_REFRESH_TTL }}
+      COOKIE_DOMAIN: ${{ secrets.COOKIE_DOMAIN }}
+      COOKIE_SECURE: ${{ secrets.COOKIE_SECURE }}
+      COOKIE_SAMESITE: ${{ secrets.COOKIE_SAMESITE }}
+      EMAIL_ENABLED: ${{ secrets.EMAIL_ENABLED }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_SECURE: ${{ secrets.SMTP_SECURE }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+      MAIL_FROM: ${{ secrets.MAIL_FROM }}
+      OTP_LENGTH: ${{ secrets.OTP_LENGTH }}
+      OTP_TTL_MINUTES: ${{ secrets.OTP_TTL_MINUTES }}
+      OTP_MAX_ATTEMPTS: ${{ secrets.OTP_MAX_ATTEMPTS }}
+      OTP_RESEND_COOLDOWN_SECONDS: ${{ secrets.OTP_RESEND_COOLDOWN_SECONDS }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      DEFAULT_AI_PROVIDER: ${{ secrets.DEFAULT_AI_PROVIDER }}
+      DEFAULT_PROMPT_PROFILE: ${{ secrets.DEFAULT_PROMPT_PROFILE }}
+      LLAMACPP_ENABLED: ${{ secrets.LLAMACPP_ENABLED }}
+      LLAMACPP_BASE_URL: ${{ secrets.LLAMACPP_BASE_URL }}
+      LLAMACPP_API_KEY: ${{ secrets.LLAMACPP_API_KEY }}
+      LLAMACPP_MODELS: ${{ secrets.LLAMACPP_MODELS }}
+      LLAMACPP_MODEL: ${{ secrets.LLAMACPP_MODEL }}
+      LLAMACPP_MODELS_MAX: ${{ secrets.LLAMACPP_MODELS_MAX }}
+      LLAMACPP_CATALOG_TTL_MS: ${{ secrets.LLAMACPP_CATALOG_TTL_MS }}
+      LLAMACPP_CONTEXT_WINDOW: ${{ secrets.LLAMACPP_CONTEXT_WINDOW }}
+      LLAMACPP_REQUEST_TIMEOUT_MS: ${{ secrets.LLAMACPP_REQUEST_TIMEOUT_MS }}
+      LLAMACPP_THINKING: ${{ secrets.LLAMACPP_THINKING }}
+      EMBEDDING_ENABLED: ${{ secrets.EMBEDDING_ENABLED }}
+      EMBEDDING_BASE_URL: ${{ secrets.EMBEDDING_BASE_URL }}
+      EMBEDDING_API_KEY: ${{ secrets.EMBEDDING_API_KEY }}
+      EMBEDDING_MODEL: ${{ secrets.EMBEDDING_MODEL }}
+      EMBEDDING_DIMENSIONS: ${{ secrets.EMBEDDING_DIMENSIONS }}
+      EMBEDDING_BATCH_SIZE: ${{ secrets.EMBEDDING_BATCH_SIZE }}
+      EMBEDDING_REQUEST_TIMEOUT_MS: ${{ secrets.EMBEDDING_REQUEST_TIMEOUT_MS }}
+      EMBEDDING_QUERY_PREFIX: ${{ secrets.EMBEDDING_QUERY_PREFIX }}
+      EMBEDDING_PASSAGE_PREFIX: ${{ secrets.EMBEDDING_PASSAGE_PREFIX }}
+      GPU_ENABLED: ${{ secrets.GPU_ENABLED }}
+      GPU_BASE_URL: ${{ secrets.GPU_BASE_URL }}
+      GPU_API_KEY: ${{ secrets.GPU_API_KEY }}
+      GPU_MODEL: ${{ secrets.GPU_MODEL }}
+      SELF_HOSTED_ALLOWED_HOSTS: ${{ secrets.SELF_HOSTED_ALLOWED_HOSTS }}
+      MAX_ACTIVE_REQUESTS_PER_USER: ${{ secrets.MAX_ACTIVE_REQUESTS_PER_USER }}
+      MAX_REQUESTS_PER_MINUTE: ${{ secrets.MAX_REQUESTS_PER_MINUTE }}
+      MAX_REQUESTS_PER_HOUR: ${{ secrets.MAX_REQUESTS_PER_HOUR }}
+      MAX_QUEUE_SIZE: ${{ secrets.MAX_QUEUE_SIZE }}
+      MAX_PROMPT_TOKENS: ${{ secrets.MAX_PROMPT_TOKENS }}
+      MAX_OUTPUT_TOKENS_NORMAL: ${{ secrets.MAX_OUTPUT_TOKENS_NORMAL }}
+      MAX_OUTPUT_TOKENS_DETAILED: ${{ secrets.MAX_OUTPUT_TOKENS_DETAILED }}
+      MAX_CONVERSATION_CONTEXT_TOKENS: ${{ secrets.MAX_CONVERSATION_CONTEXT_TOKENS }}
+      MAX_RETRIEVAL_CONTEXT_TOKENS: ${{ secrets.MAX_RETRIEVAL_CONTEXT_TOKENS }}
+      LLM_WORKER_CONCURRENCY: ${{ secrets.LLM_WORKER_CONCURRENCY }}
+      QUEUE_STALE_MS: ${{ secrets.QUEUE_STALE_MS }}
+      STREAM_IDLE_TIMEOUT_MS: ${{ secrets.STREAM_IDLE_TIMEOUT_MS }}
+      SSE_HEARTBEAT_MS: ${{ secrets.SSE_HEARTBEAT_MS }}
+      JOB_ATTEMPTS: ${{ secrets.JOB_ATTEMPTS }}
+      BREAKER_FAILURE_THRESHOLD: ${{ secrets.BREAKER_FAILURE_THRESHOLD }}
+      BREAKER_WINDOW_MS: ${{ secrets.BREAKER_WINDOW_MS }}
+      BREAKER_COOLDOWN_MS: ${{ secrets.BREAKER_COOLDOWN_MS }}
+      RAG_ENABLED: ${{ secrets.RAG_ENABLED }}
+      RAG_TOP_K: ${{ secrets.RAG_TOP_K }}
+      RAG_CANDIDATE_LIMIT: ${{ secrets.RAG_CANDIDATE_LIMIT }}
+      RAG_MIN_SCORE: ${{ secrets.RAG_MIN_SCORE }}
+      RAG_CHUNK_TOKENS: ${{ secrets.RAG_CHUNK_TOKENS }}
+      RAG_CHUNK_OVERLAP_TOKENS: ${{ secrets.RAG_CHUNK_OVERLAP_TOKENS }}
+      RAG_VECTOR_WEIGHT: ${{ secrets.RAG_VECTOR_WEIGHT }}
+      RAG_MAX_UPLOAD_BYTES: ${{ secrets.RAG_MAX_UPLOAD_BYTES }}
+      RAG_MAX_DOCUMENTS_PER_USER: ${{ secrets.RAG_MAX_DOCUMENTS_PER_USER }}
+      RAG_VECTOR_CACHE_MAX_CHUNKS: ${{ secrets.RAG_VECTOR_CACHE_MAX_CHUNKS }}
+      WEB_RETRIEVAL_ENABLED: ${{ secrets.WEB_RETRIEVAL_ENABLED }}
+      SEARXNG_BASE_URL: ${{ secrets.SEARXNG_BASE_URL }}
+      WEB_ALLOWED_DOMAINS: ${{ secrets.WEB_ALLOWED_DOMAINS }}
+      WEB_MAX_FETCH: ${{ secrets.WEB_MAX_FETCH }}
+      WEB_TOP_PASSAGES: ${{ secrets.WEB_TOP_PASSAGES }}
+      WEB_TOTAL_BUDGET_MS: ${{ secrets.WEB_TOTAL_BUDGET_MS }}
+      WEB_RERANK_MODE: ${{ secrets.WEB_RERANK_MODE }}
+      WEB_MAX_RERANK_PASSAGES: ${{ secrets.WEB_MAX_RERANK_PASSAGES }}
+      RATE_LIMIT_WINDOW_MS: ${{ secrets.RATE_LIMIT_WINDOW_MS }}
+      RATE_LIMIT_MAX: ${{ secrets.RATE_LIMIT_MAX }}
+      AUTH_RATE_LIMIT_MAX: ${{ secrets.AUTH_RATE_LIMIT_MAX }}
+      JSON_BODY_LIMIT: ${{ secrets.JSON_BODY_LIMIT }}
+      MODEL_SHA256_QWEN3_14B: ${{ secrets.MODEL_SHA256_QWEN3_14B }}
+      MODEL_SHA256_EMBEDDING: ${{ secrets.MODEL_SHA256_EMBEDDING }}
+      ATOZAS_SSO_ENABLED: ${{ secrets.ATOZAS_SSO_ENABLED }}
+      ATOZAS_ISSUER: ${{ secrets.ATOZAS_ISSUER }}
+      ATOZAS_CLIENT_ID: ${{ secrets.ATOZAS_CLIENT_ID }}
+      ATOZAS_CLIENT_SECRET: ${{ secrets.ATOZAS_CLIENT_SECRET }}
+      ATOZAS_REDIRECT_URI: ${{ secrets.ATOZAS_REDIRECT_URI }}
+      ATOZAS_SCOPE: ${{ secrets.ATOZAS_SCOPE }}
+      ATOZAS_AUTHORIZE_URL: ${{ secrets.ATOZAS_AUTHORIZE_URL }}
+      ATOZAS_TOKEN_URL: ${{ secrets.ATOZAS_TOKEN_URL }}
+      ATOZAS_USERINFO_URL: ${{ secrets.ATOZAS_USERINFO_URL }}
+      ATOZAS_REVOKE_URL: ${{ secrets.ATOZAS_REVOKE_URL }}
+      ATOZAS_TOKEN_AUTH_STYLE: ${{ secrets.ATOZAS_TOKEN_AUTH_STYLE }}
+      ATOZAS_HOMEPAGE_KEY: ${{ secrets.ATOZAS_HOMEPAGE_KEY }}
+      ATOZAS_SESSION_COOKIE_NAME: ${{ secrets.ATOZAS_SESSION_COOKIE_NAME }}
+      ATOZAS_SESSION_SECRET: ${{ secrets.ATOZAS_SESSION_SECRET }}
+      ATOZAS_SESSION_MAX_AGE_DAYS: ${{ secrets.ATOZAS_SESSION_MAX_AGE_DAYS }}
+      ATOZAS_SESSION_COLLECTION: ${{ secrets.ATOZAS_SESSION_COLLECTION }}
+      ATOZAS_COOKIE_SECURE: ${{ secrets.ATOZAS_COOKIE_SECURE }}
+      ATOZAS_COOKIE_SAMESITE: ${{ secrets.ATOZAS_COOKIE_SAMESITE }}
+      ATOZAS_AUTO_REDIRECT: ${{ secrets.ATOZAS_AUTO_REDIRECT }}
+    steps:
+      - name: Confirm deploy branch
+        run: |
+          set -euo pipefail
+          case "${GITHUB_REF_NAME}" in
+            atozasai_testCICD_testSite_deploy|atozasaimain_testCICD_final_deploy) ;;
+            *) echo "Refusing to deploy ${GITHUB_REF_NAME}"; exit 1 ;;
+          esac
+          if [ -z "${PUBLIC_URL}" ]; then
+            echo "PUBLIC_URL is not set on this GitHub Environment."
+            exit 1
+          fi
+
+      - name: Resolve deploy scope
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_FRONTEND: ${{ inputs.deploy_frontend }}
+          INPUT_BACKEND: ${{ inputs.deploy_backend }}
+          PUSH_FRONTEND: ${{ needs.changes.outputs.frontend }}
+          PUSH_BACKEND: ${{ needs.changes.outputs.backend }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "frontend=${INPUT_FRONTEND}" >> "$GITHUB_OUTPUT"
+            echo "backend=${INPUT_BACKEND}" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=${PUSH_FRONTEND}" >> "$GITHUB_OUTPUT"
+            echo "backend=${PUSH_BACKEND}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download frontend builds
+        if: steps.scope.outputs.frontend == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend-artifact
+
+      - name: Stage frontend directories
+        if: steps.scope.outputs.frontend == 'true'
+        run: |
+          set -euo pipefail
+          test -f frontend-artifact/client/dist/index.html
+          test -f frontend-artifact/admin/dist/index.html
+          rm -rf client-dist admin-dist
+          cp -a frontend-artifact/client/dist client-dist
+          cp -a frontend-artifact/admin/dist admin-dist
+
+      - name: Prepare release and backup
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          APP_DIR: ${{ secrets.VPS_APP_DIR }}
+          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+          DEPLOY_FRONTEND: ${{ steps.scope.outputs.frontend }}
+          DEPLOY_BACKEND: ${{ steps.scope.outputs.backend }}
+          RELEASE_SHA: ${{ github.sha }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_SSH_FINGERPRINT }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          command_timeout: 10m
+          script_stop: true
+          envs: APP_DIR,PUBLIC_URL,DEPLOY_FRONTEND,DEPLOY_BACKEND,RELEASE_SHA
+          script: |
+            set -eu
+            case "${APP_DIR}" in
+              /home/*/htdocs/*) ;;
+              *)
+                echo "VPS_APP_DIR must be the CloudPanel document root, for example /home/atozasai/htdocs/atozasai.com"
+                exit 1
+                ;;
+            esac
+            [ -d "${APP_DIR}" ] || { echo "Document root does not exist: ${APP_DIR}"; exit 1; }
+            [ -f "${APP_DIR}/server/.env" ] || { echo "server/.env is missing. Create it on the VPS before deploying. This workflow will not write it."; exit 1; }
+            missing=""
+            for key in MONGO_URI JWT_ACCESS_SECRET JWT_REFRESH_SECRET PORT FRONTEND_URL BACKEND_URL; do
+              value="$(grep -E "^${key}=" "${APP_DIR}/server/.env" | tail -n 1 | cut -d= -f2- | tr -d '\r"'"'"' ' || true)"
+              if [ -z "${value}" ]; then
+                missing="${missing} ${key}"
+              fi
+            done
+            if [ -n "${missing}" ]; then
+              echo "server/.env is missing values for:${missing}"
+              exit 1
+            fi
+            host="$(printf '%s' "${PUBLIC_URL}" | sed -E 's#https?://([^/]+).*#\1#')"
+            if ! grep -E '^FRONTEND_URL=' "${APP_DIR}/server/.env" | grep -q "${host}"; then
+              echo "WARNING: FRONTEND_URL does not contain ${host}. Cookies and CORS for this site will be wrong until server/.env matches PUBLIC_URL."
+            fi
+            command -v rsync >/dev/null 2>&1 || { echo "rsync is not installed on the VPS"; exit 1; }
+            command -v tar >/dev/null 2>&1 || { echo "tar is not installed on the VPS"; exit 1; }
+            backup_root="${APP_DIR}/.deploy-backups"
+            mkdir -p "${backup_root}"
+            stamp="$(date +%Y%m%d-%H%M%S)"
+            dest="${backup_root}/${stamp}"
+            mkdir -p "${dest}"
+            printf '%s\n' "${RELEASE_SHA}" > "${dest}/sha"
+            files=""
+            for item in server deploy package.json package-lock.json; do
+              if [ -e "${APP_DIR}/${item}" ]; then
+                files="${files} ${item}"
+              fi
+            done
+            tar -C "${APP_DIR}" -cf "${dest}/app.tar" \
+              --exclude='server/node_modules' \
+              --exclude='server/models' \
+              --exclude='server/.llamacpp-cpu' \
+              --exclude='server/uploads' \
+              --exclude='server/tmp' \
+              --exclude='server/.env' \
+              --exclude='server/src/.env' \
+              --exclude='.deploy-backups' \
+              --exclude='.deploy-staging' \
+              --exclude='.deploy-runtime' \
+              --exclude='node_modules' \
+              ${files}
+            printf '%s\n' "${dest}" > "${backup_root}/latest"
+            find "${backup_root}" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -n | awk '{print $2}' | head -n -5 | while read -r old; do
+              rm -rf "${old}"
+            done
+            rm -rf "${APP_DIR}/.deploy-staging"
+            mkdir -p "${APP_DIR}/.deploy-staging/incoming"
+            echo "Backup stored. Live files were not changed."
+
+      - name: Upload backend to staging
+        if: steps.scope.outputs.backend == 'true'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_SSH_FINGERPRINT }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          timeout: 20m
+          overwrite: true
+          source: "server,deploy,package.json,package-lock.json"
+          target: ${{ secrets.VPS_APP_DIR }}/.deploy-staging/incoming
+          exclude: |
+            .env
+            node_modules
+            .llamacpp-cpu
+            uploads
+            tmp
+            *.gguf
+            models.ini
+
+      - name: Upload frontend builds to staging
+        if: steps.scope.outputs.frontend == 'true'
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_SSH_FINGERPRINT }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          timeout: 15m
+          overwrite: true
+          source: "client-dist,admin-dist"
+          target: ${{ secrets.VPS_APP_DIR }}/.deploy-staging/incoming
+
+      - name: Publish release, reload PM2, health check, rollback
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          APP_DIR: ${{ secrets.VPS_APP_DIR }}
+          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+          DEPLOY_FRONTEND: ${{ steps.scope.outputs.frontend }}
+          DEPLOY_BACKEND: ${{ steps.scope.outputs.backend }}
+          PM2_API_NAME: ${{ env.PM2_API_NAME }}
+          PM2_WORKER_NAME: ${{ env.PM2_WORKER_NAME }}
+          REQUIRE_API_READY: ${{ env.REQUIRE_API_READY }}
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          fingerprint: ${{ secrets.VPS_SSH_FINGERPRINT }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          command_timeout: 30m
+          script_stop: true
+          envs: APP_DIR,PUBLIC_URL,DEPLOY_FRONTEND,DEPLOY_BACKEND,PM2_API_NAME,PM2_WORKER_NAME,REQUIRE_API_READY
+          script: |
+            set -eu
+            PUBLIC_URL="${PUBLIC_URL%/}"
+            STAGE="${APP_DIR}/.deploy-staging/incoming"
+            export PATH="/usr/local/bin:/usr/bin:/bin:${PATH}"
+            if [ -s "${HOME}/.nvm/nvm.sh" ]; then
+              export NVM_DIR="${HOME}/.nvm"
+              # shellcheck disable=SC1091
+              . "${NVM_DIR}/nvm.sh"
+              nvm use 20 >/dev/null 2>&1 || nvm use 18 >/dev/null 2>&1 || nvm use --lts >/dev/null 2>&1 || true
+            fi
+            command -v node >/dev/null 2>&1 || { echo "node is not on PATH for this site user. Install Node 20 with nvm."; exit 1; }
+            command -v npm >/dev/null 2>&1 || { echo "npm is not on PATH"; exit 1; }
+            if ! command -v pm2 >/dev/null 2>&1; then
+              npm install -g pm2
+            fi
+            node -v
+            LOG_DIR="/var/log/atozas"
+            if [ ! -d "${LOG_DIR}" ] || [ ! -w "${LOG_DIR}" ]; then
+              if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+                sudo mkdir -p /var/log/atozas
+                sudo chown "$(id -u):$(id -g)" /var/log/atozas || true
+              fi
+            fi
+            if [ ! -d /var/log/atozas ] || [ ! -w /var/log/atozas ]; then
+              LOG_DIR="${HOME}/logs/${PM2_API_NAME}"
+              mkdir -p "${LOG_DIR}"
+            else
+              LOG_DIR="/var/log/atozas"
+            fi
+            RUNTIME_DIR="${APP_DIR}/.deploy-runtime"
+            mkdir -p "${RUNTIME_DIR}"
+            ECOSYSTEM="${RUNTIME_DIR}/ecosystem.config.cjs"
+            write_ecosystem() {
+              sed \
+                -e "s|/var/log/atozas|${LOG_DIR}|g" \
+                -e "s|name: 'atozas-api'|name: '${PM2_API_NAME}'|g" \
+                -e "s|name: 'atozas-worker'|name: '${PM2_WORKER_NAME}'|g" \
+                "${APP_DIR}/deploy/ecosystem.config.cjs" > "${ECOSYSTEM}"
+            }
+
+            rollback() {
+              echo "Deploy failed. Restoring the previous release."
+              latest="$(cat "${APP_DIR}/.deploy-backups/latest")"
+              tar -xf "${latest}/app.tar" -C "${APP_DIR}"
+              if [ "${DEPLOY_BACKEND}" = "true" ]; then
+                (cd "${APP_DIR}/server" && npm ci --omit=dev --no-audit --no-fund) || true
+                pm2 startOrReload "${ECOSYSTEM}" --env production --update-env || true
+                pm2 save || true
+              fi
+              pm2 logs "${PM2_API_NAME}" --lines 40 --nostream || true
+              exit 1
+            }
+
+            if [ "${DEPLOY_BACKEND}" = "true" ]; then
+              [ -d "${STAGE}/server" ] || { echo "Staged server directory is missing"; exit 1; }
+              rsync -a --delete \
+                --exclude '.env' \
+                --exclude 'node_modules/' \
+                --exclude '/models/' \
+                --exclude '/.llamacpp-cpu/' \
+                --exclude '/dist/' \
+                --exclude '/admin-dist/' \
+                --exclude '/uploads/' \
+                --exclude '/tmp/' \
+                "${STAGE}/server/" "${APP_DIR}/server/" || rollback
+              if [ -d "${STAGE}/deploy" ]; then
+                mkdir -p "${APP_DIR}/deploy"
+                rsync -a \
+                  --exclude 'llama/models.ini' \
+                  --exclude 'searxng/.env' \
+                  "${STAGE}/deploy/" "${APP_DIR}/deploy/" || rollback
+              fi
+              if [ -f "${STAGE}/package.json" ]; then
+                cp -f "${STAGE}/package.json" "${APP_DIR}/package.json"
+              fi
+              if [ -f "${STAGE}/package-lock.json" ]; then
+                cp -f "${STAGE}/package-lock.json" "${APP_DIR}/package-lock.json"
+              fi
+              write_ecosystem || rollback
+              (cd "${APP_DIR}/server" && npm ci --omit=dev --no-audit --no-fund) || rollback
+              if pm2 describe "${PM2_API_NAME}" >/dev/null 2>&1; then
+                pm2 startOrReload "${ECOSYSTEM}" --env production --update-env || rollback
+              else
+                pm2 start "${ECOSYSTEM}" --env production || rollback
+              fi
+              pm2 save || rollback
+              pm2_ok=0
+              for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+                if node -e 'const {execSync}=require("node:child_process"); const list=JSON.parse(execSync("pm2 jlist",{encoding:"utf8"})); const api=process.env.PM2_API_NAME; const worker=process.env.PM2_WORKER_NAME; const online=list.filter((p)=>p.name===api&&p.pm2_env&&p.pm2_env.status==="online").length; const workers=list.filter((p)=>p.name===worker).length; if(online<1||workers!==1){console.error("waiting for pm2 api="+online+" worker="+workers); process.exit(1);}'; then
+                  pm2_ok=1
+                  break
+                fi
+                sleep 2
+              done
+              [ "${pm2_ok}" = "1" ] || rollback
+            fi
+
+            if [ "${DEPLOY_FRONTEND}" = "true" ]; then
+              [ -f "${STAGE}/client-dist/index.html" ] || { echo "Staged chat build is missing"; exit 1; }
+              [ -f "${STAGE}/admin-dist/index.html" ] || { echo "Staged admin build is missing"; exit 1; }
+              rm -rf "${APP_DIR}/server/dist" "${APP_DIR}/server/admin-dist"
+              mkdir -p "${APP_DIR}/server/dist" "${APP_DIR}/server/admin-dist"
+              rsync -a "${STAGE}/client-dist/" "${APP_DIR}/server/dist/" || rollback
+              rsync -a "${STAGE}/admin-dist/" "${APP_DIR}/server/admin-dist/" || rollback
+            fi
+
+            port="$(grep -E '^PORT=' "${APP_DIR}/server/.env" | tail -n 1 | cut -d= -f2- | tr -d '\r"'"'"' ')"
+            port="${port:-5000}"
+            live_ok=0
+            for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+              if curl -sf --max-time 5 "http://127.0.0.1:${port}/api/health/live" >/dev/null; then
+                live_ok=1
+                break
+              fi
+              sleep 2
+            done
+            [ "${live_ok}" = "1" ] || rollback
+
+            public_code="$(curl -sL -o /dev/null -w '%{http_code}' --max-time 20 "${PUBLIC_URL}/api/health/live" || true)"
+            echo "Public liveness HTTP ${public_code}"
+            [ "${public_code}" = "200" ] || rollback
+
+            home_code="$(curl -sL -o /dev/null -w '%{http_code}' --max-time 20 "${PUBLIC_URL}/" || true)"
+            echo "Homepage HTTP ${home_code}"
+            [ "${home_code}" = "200" ] || rollback
+
+            admin_code="$(curl -sL -o /dev/null -w '%{http_code}' --max-time 20 "${PUBLIC_URL}/admin/" || true)"
+            echo "Admin HTTP ${admin_code}"
+            [ "${admin_code}" = "200" ] || rollback
+
+            elapsed="$(curl -sL -o /dev/null -w '%{time_total}' --max-time 20 "${PUBLIC_URL}/api/health/live" || echo 99)"
+            echo "Health response time ${elapsed}s"
+            node -e "if (Number(process.argv[1]) > 5) process.exit(1)" "${elapsed}" || rollback
+
+            if [ "${REQUIRE_API_READY}" = "true" ]; then
+              ready_code="$(curl -sL -o /dev/null -w '%{http_code}' --max-time 20 "${PUBLIC_URL}/api/health/ready" || true)"
+              echo "Readiness HTTP ${ready_code}"
+              [ "${ready_code}" = "200" ] || rollback
+            else
+              ready_code="$(curl -sL -o /dev/null -w '%{http_code}' --max-time 20 "${PUBLIC_URL}/api/health/ready" || true)"
+              echo "Readiness HTTP ${ready_code} (not required)"
+            fi
+
+            rm -rf "${APP_DIR}/.deploy-staging"
+            echo "DEPLOY_OK ${PUBLIC_URL}"
+
+  lighthouse:
+    name: Lighthouse audit
+    needs: deploy
+    if: needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    environment: ${{ github.ref_name == 'atozasaimain_testCICD_final_deploy' && 'production' || 'testatozas' }}
+    steps:
+      - name: Lighthouse
+        env:
+          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+        run: |
+          set -euo pipefail
+          PUBLIC_URL="${PUBLIC_URL%/}"
+          chrome=""
+          if command -v google-chrome >/dev/null 2>&1; then
+            chrome="$(command -v google-chrome)"
+          elif command -v google-chrome-stable >/dev/null 2>&1; then
+            chrome="$(command -v google-chrome-stable)"
+          fi
+          if [ -z "${chrome}" ]; then
+            echo "Chrome is not installed on the runner."
+            exit 1
+          fi
+          npx --yes lighthouse@12.2.1 "${PUBLIC_URL}/" \
+            --chrome-path="${chrome}" \
+            --chrome-flags="--headless=new --no-sandbox --disable-gpu" \
+            --only-categories=performance,accessibility,best-practices,seo \
+            --output=json \
+            --output-path=lh.json \
+            --quiet
+          node <<'EOF'
+          const fs = require('node:fs');
+          const report = JSON.parse(fs.readFileSync('lh.json', 'utf8'));
+          const lines = ['| Category | Score |', '|---|---:|'];
+          let fail = false;
+          for (const category of Object.values(report.categories)) {
+            const score = Math.round((category.score || 0) * 100);
+            lines.push(`| ${category.title} | ${score} |`);
+            if (category.id === 'accessibility' && score < 70) fail = true;
+          }
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
+          console.log(lines.join('\n'));
+          if (fail) {
+            console.error('Accessibility score is below 70. This audit does not roll back the deploy.');
+            process.exit(1);
+          }
+          EOF
+
+  summary:
+    name: PASS/FAIL summary
+    needs: [changes, quality_gates, build_frontend, deploy, lighthouse]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish summary
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          FRONTEND_CHANGED: ${{ needs.changes.outputs.frontend }}
+          BACKEND_CHANGED: ${{ needs.changes.outputs.backend }}
+          QUALITY: ${{ needs.quality_gates.result }}
+          BUILD: ${{ needs.build_frontend.result }}
+          DEPLOY: ${{ needs.deploy.result }}
+          LIGHTHOUSE: ${{ needs.lighthouse.result }}
+        run: |
+          set -euo pipefail
+          label() {
+            case "$1" in
+              success) printf 'PASS' ;;
+              failure) printf 'FAIL' ;;
+              skipped) printf 'SKIPPED' ;;
+              cancelled) printf 'CANCELLED' ;;
+              *) printf '%s' "$1" ;;
+            esac
+          }
+          if [ "${REF_NAME}" = "atozasaimain_testCICD_final_deploy" ]; then
+            target="production → https://atozasai.com/"
+          elif [ "${REF_NAME}" = "atozasai_testCICD_testSite_deploy" ]; then
+            target="testatozas → https://testatozasai.testatozas.in/"
+          else
+            target="${REF_NAME}"
+          fi
+          {
+            echo "## Deploy summary"
+            echo ""
+            echo "Branch \`${REF_NAME}\` → ${target}"
+            echo ""
+            echo "Changed: frontend=\`${FRONTEND_CHANGED}\` backend=\`${BACKEND_CHANGED}\`"
+            echo ""
+            echo "| Gate | Result | Required to deploy |"
+            echo "|---|---|---|"
+            echo "| Quality (lint, tests, Mongo contract, audit, Docker) | $(label "${QUALITY}") | yes |"
+            echo "| Production build and bundle budget | $(label "${BUILD}") | yes |"
+            echo "| Secure deploy, health check, rollback | $(label "${DEPLOY}") | yes |"
+            echo "| Lighthouse | $(label "${LIGHTHOUSE}") | no |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          fail=0
+          for item in "${QUALITY}" "${BUILD}" "${DEPLOY}"; do
+            if [ "${item}" = "failure" ] || [ "${item}" = "cancelled" ]; then
+              fail=1
+            fi
+          done
+          if [ "${fail}" = "1" ]; then
+            echo "RESULT: FAIL" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "RESULT: PASS" | tee -a "$GITHUB_STEP_SUMMARY"
