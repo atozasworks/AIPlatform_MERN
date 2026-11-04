@@ -662,23 +662,34 @@ jobs:
             mkdir -p "${RUNTIME_DIR}"
             ECOSYSTEM="${RUNTIME_DIR}/ecosystem.config.cjs"
             write_ecosystem() {
+              # Fork mode. The running PM2 daemon launches cluster workers via
+              # server/node_modules/pm2, and npm ci deletes that directory.
               sed \
                 -e "s|/var/log/atozas|${LOG_DIR}|g" \
                 -e "s|name: 'atozas-api'|name: '${PM2_API_NAME}'|g" \
                 -e "s|name: 'atozas-worker'|name: '${PM2_WORKER_NAME}'|g" \
+                -e "s|exec_mode: 'cluster'|exec_mode: 'fork'|g" \
                 "${APP_DIR}/deploy/ecosystem.config.cjs" > "${ECOSYSTEM}"
+            }
+
+            restart_app() {
+              pm2 delete "${PM2_API_NAME}" >/dev/null 2>&1 || true
+              pm2 delete "${PM2_WORKER_NAME}" >/dev/null 2>&1 || true
+              pm2 start "${ECOSYSTEM}" --env production --update-env
             }
 
             rollback() {
               echo "Deploy failed. Restoring the previous release."
+              mkdir -p "${RUNTIME_DIR}"
+              if [ -f "${APP_DIR}/server/vendor/atozas-auth-kit-express/index.js" ]; then
+                cp -f "${APP_DIR}/server/vendor/atozas-auth-kit-express/index.js" "${RUNTIME_DIR}/auth-kit-index.js"
+              fi
               latest="$(cat "${APP_DIR}/.deploy-backups/latest")"
               tar -xf "${latest}/app.tar" -C "${APP_DIR}"
               if [ "${DEPLOY_BACKEND}" = "true" ]; then
                 (cd "${APP_DIR}/server" && npm ci --omit=dev --no-audit --no-fund) || true
-                if [ ! -f "${APP_DIR}/server/vendor/atozas-auth-kit-express/index.js" ]; then
-                  echo "Restored release is missing server/vendor/atozas-auth-kit-express/index.js, so the API cannot load auth."
-                fi
-                pm2 startOrReload "${ECOSYSTEM}" --env production --update-env || true
+                SAVED_KIT="${RUNTIME_DIR}/auth-kit-index.js" node -e 'const fs=require("node:fs"); const path=require("node:path"); const saved=process.env.SAVED_KIT; const pkgDir=path.join(process.env.APP_DIR,"server/node_modules/atozas-auth-kit-express"); const dist=path.join(pkgDir,"dist/index.js"); if(fs.existsSync(dist)) process.exit(0); if(!saved||!fs.existsSync(saved)||!fs.existsSync(path.join(pkgDir,"package.json"))){ console.error("Restored release has no auth kit bundle; API will not stay up."); process.exit(0);} fs.mkdirSync(path.dirname(dist),{recursive:true}); fs.copyFileSync(saved,dist); const pkgPath=path.join(pkgDir,"package.json"); const pkg=JSON.parse(fs.readFileSync(pkgPath,"utf8")); pkg.type="module"; pkg.main="./dist/index.js"; pkg.module="./dist/index.js"; delete pkg.types; pkg.exports={".":{import:"./dist/index.js",default:"./dist/index.js"}}; fs.writeFileSync(pkgPath, JSON.stringify(pkg,null,2)+"\n"); console.log("Installed saved auth kit bundle into "+dist);'
+                restart_app || true
                 pm2 save || true
               fi
               pm2 logs "${PM2_API_NAME}" --lines 40 --nostream || true
@@ -716,11 +727,8 @@ jobs:
                 echo "server/vendor/atozas-auth-kit-express/index.js is missing. Refusing to start the API."
                 rollback
               fi
-              if pm2 describe "${PM2_API_NAME}" >/dev/null 2>&1; then
-                pm2 startOrReload "${ECOSYSTEM}" --env production --update-env || rollback
-              else
-                pm2 start "${ECOSYSTEM}" --env production || rollback
-              fi
+              echo "Starting ${PM2_API_NAME} in fork mode."
+              restart_app || rollback
               pm2 save || rollback
               pm2_ok=0
               for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
@@ -730,7 +738,13 @@ jobs:
                 fi
                 sleep 2
               done
-              [ "${pm2_ok}" = "1" ] || rollback
+              if [ "${pm2_ok}" != "1" ]; then
+                echo "PM2 did not stay online. API log:"
+                pm2 logs "${PM2_API_NAME}" --lines 30 --nostream || true
+                echo "Worker log:"
+                pm2 logs "${PM2_WORKER_NAME}" --lines 30 --nostream || true
+                rollback
+              fi
             fi
 
             if [ "${DEPLOY_FRONTEND}" = "true" ]; then

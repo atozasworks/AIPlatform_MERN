@@ -24,7 +24,7 @@ import {
 } from '../services/admin/dataBrowser.js';
 
 // Mirror auth.controller's session cookies so the admin panel shares the exact
-// same httpOnly JWT session theeeee rest of the platform already trusts. Because
+// same httpOnly JWT session the rest of the platform already trusts. Because
 // the access cookie is scoped to path '/', requireAuth on every /admin route
 // authenticates the panel with no extra plumbing, and the refresh cookie stays
 // on '/api/v1/auth' so the panel reuses the app's existing /auth/refresh.
