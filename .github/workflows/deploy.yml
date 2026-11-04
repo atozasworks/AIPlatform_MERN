@@ -498,6 +498,11 @@ jobs:
           envs: APP_DIR,DEPLOY_FRONTEND,DEPLOY_BACKEND,RELEASE_SHA
           script: |
             set -eu
+            # CloudPanel wrote "umask 007export" with the newline missing.
+            # drone-scp treats any stderr from that line as a failed copy.
+            if [ -f "${HOME}/.bashrc" ] && grep -q 'umask 007export' "${HOME}/.bashrc"; then
+              sed -i 's/umask 007export/umask 007\nexport/g' "${HOME}/.bashrc"
+            fi
             case "${APP_DIR}" in
               /home/*/htdocs/*) ;;
               *)
@@ -566,14 +571,6 @@ jobs:
           overwrite: true
           source: "server,deploy,package.json,package-lock.json"
           target: ${{ secrets.VPS_APP_DIR }}/.deploy-staging/incoming
-          exclude: |
-            .env
-            node_modules
-            .llamacpp-cpu
-            uploads
-            tmp
-            *.gguf
-            models.ini
 
       - name: Upload frontend builds to staging
         if: steps.scope.outputs.frontend == 'true'
