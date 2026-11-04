@@ -175,6 +175,8 @@ jobs:
         env:
           NODE_ENV: test
           LOG_LEVEL: silent
+          JWT_ACCESS_SECRET: ci-test-access-secret
+          JWT_REFRESH_SECRET: ci-test-refresh-secret
         run: npm test
 
       - name: Database validation

@@ -175,8 +175,16 @@ export const env = {
   },
 
   jwt: {
-    accessSecret: required('JWT_ACCESS_SECRET', process.env.JWT_ACCESS_SECRET),
-    refreshSecret: required('JWT_REFRESH_SECRET', process.env.JWT_REFRESH_SECRET),
+    // Unit tests import this module without a .env file. Placeholders are used
+    // only when NODE_ENV=test; production still refuses to boot without secrets.
+    accessSecret: required(
+      'JWT_ACCESS_SECRET',
+      process.env.JWT_ACCESS_SECRET || (NODE_ENV === 'test' ? 'test-jwt-access-secret' : ''),
+    ),
+    refreshSecret: required(
+      'JWT_REFRESH_SECRET',
+      process.env.JWT_REFRESH_SECRET || (NODE_ENV === 'test' ? 'test-jwt-refresh-secret' : ''),
+    ),
     accessTtl: process.env.JWT_ACCESS_TTL || '1h',
     refreshTtl: process.env.JWT_REFRESH_TTL || '1h',
   },
