@@ -12,7 +12,8 @@
  * tsup binary exists next to the kit or the app....
  */
 import { execFileSync, execSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -44,28 +45,45 @@ try {
 }
 
 function tsupCli(root) {
-  const cli = path.join(root, 'node_modules', 'tsup', 'dist', 'cli-default.js');
-  return existsSync(cli) ? cli : '';
+  const dist = path.join(root, 'node_modules', 'tsup', 'dist');
+  for (const name of ['cli-default.js', 'cli.js']) {
+    const full = path.join(dist, name);
+    if (existsSync(full)) return full;
+  }
+  return '';
 }
 
 function compileWithTsup(dir) {
-  let cli = tsupCli(projectRoot) || tsupCli(dir);
-  if (!cli) {
-    console.log('[build-auth-kit] Installing tsup into the auth kit (production install has no compiler)...');
-    execSync(
-      'npm install --prefix . --no-save --no-package-lock --no-audit --no-fund tsup@8.5.1 typescript@5.9.3',
-      { cwd: dir, stdio: 'inherit' },
-    );
-    // npm hoists out of a package that already lives under node_modules,
-    // so the binary may land in the app root rather than the kit.
-    cli = tsupCli(dir) || tsupCli(projectRoot);
+  // `npm ci --omit=dev` exports npm_config_omit=dev into this postinstall.
+  // Installing tsup inside node_modules then drops the package. Use a temp
+  // project so the compiler is a real dependency.
+  const tools = path.join(tmpdir(), 'atozas-auth-kit-tools');
+  mkdirSync(tools, { recursive: true });
+  writeFileSync(
+    path.join(tools, 'package.json'),
+    `${JSON.stringify({
+      private: true,
+      dependencies: { tsup: '8.5.1', typescript: '5.9.3' },
+    })}\n`,
+  );
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/^npm_config_omit/i.test(key) || key === 'npm_config_production') delete env[key];
   }
+  console.log(`[build-auth-kit] Installing tsup in ${tools}`);
+  execSync('npm install --no-audit --no-fund --no-package-lock', {
+    cwd: tools,
+    stdio: 'inherit',
+    env,
+  });
+  const cli = tsupCli(tools);
   if (!cli) {
-    throw new Error('tsup is not installed');
+    throw new Error(`tsup did not install in ${tools}`);
   }
   execFileSync(process.execPath, [cli, '--config', tsupConfig, '--no-dts'], {
     cwd: dir,
     stdio: 'inherit',
+    env,
   });
 }
 
