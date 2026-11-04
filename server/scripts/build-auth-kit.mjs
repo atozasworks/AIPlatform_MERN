@@ -10,7 +10,7 @@
  *
  * The compile must succeed: the API imports dist/index.mjs at boot.
  */
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -51,17 +51,18 @@ function tsupBin(root) {
 }
 
 function compileWithTsup(dir) {
+  const dtsOff = ['--dts', 'false'];
   const local = tsupBin(projectRoot);
   if (local) {
-    execSync(`"${local}"`, { cwd: dir, stdio: 'inherit' });
+    execFileSync(local, dtsOff, { cwd: dir, stdio: 'inherit' });
     return;
   }
   // Production `npm ci --omit=dev` has no tsup. Pin 8.x so npx does not
   // fetch tsup 9, which cannot resolve typescript from a sibling install.
-  execSync('npx --yes --package typescript@5.9.3 --package tsup@8.5.1 tsup', {
-    cwd: dir,
-    stdio: 'inherit',
-  });
+  execSync(
+    'npx --yes --package typescript@5.9.3 --package tsup@8.5.1 tsup --dts false',
+    { cwd: dir, stdio: 'inherit' },
+  );
 }
 
 function patchEntryPoints(dir) {

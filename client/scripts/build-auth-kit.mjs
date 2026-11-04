@@ -10,7 +10,7 @@
  * Best-effort: failures log a warning rather than breaking `npm install`, and
  * the build is skipped when the dist already exists....
  */
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -33,13 +33,16 @@ try {
     const unix = path.join(projectRoot, 'node_modules', '.bin', 'tsup');
     const win = `${unix}.cmd`;
     const local = existsSync(win) ? win : existsSync(unix) ? unix : '';
+    // Skip .d.ts: the kit's tsconfig asks for @types/react-dom, which this
+    // app does not install. Vite only needs the JS/CSS bundles.
+    const dtsOff = ['--dts', 'false'];
     if (local) {
-      execSync(`"${local}"`, { cwd: pkgDir, stdio: 'inherit' });
+      execFileSync(local, dtsOff, { cwd: pkgDir, stdio: 'inherit' });
     } else {
-      execSync('npx --yes --package typescript@5.9.3 --package tsup@8.5.1 tsup', {
-        cwd: pkgDir,
-        stdio: 'inherit',
-      });
+      execSync(
+        'npx --yes --package typescript@5.9.3 --package tsup@8.5.1 tsup --dts false',
+        { cwd: pkgDir, stdio: 'inherit' },
+      );
     }
   }
   if (!existsSync(distEsm)) {
