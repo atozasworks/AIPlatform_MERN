@@ -3,13 +3,29 @@
  *
  * Keys that are unset in GitHub are left as they already are on the VPS.
  * NODE_ENV is never changed: both sites stay production.
- * The script prints how many keys changed and never prints a value.
+ * Model and SearXNG URLs are written only when the host is loopback, a
+ * private range, or listed in SELF_HOSTED_ALLOWED_HOSTS. A public URL is
+ * skipped so the API can still boot. The script prints key names and
+ * hostnames, never a secret value.
+ *
+ * SYNC_ENV_FILE is a local test override. It is not a server setting.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-const envPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.env');
+const envPath = process.env.SYNC_ENV_FILE
+  ? path.resolve(process.env.SYNC_ENV_FILE)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.env');
+
+const URL_KEYS = new Set([
+  'LLAMACPP_BASE_URL',
+  'EMBEDDING_BASE_URL',
+  'GPU_BASE_URL',
+  'SEARXNG_BASE_URL',
+]);
+
+const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0']);
 
 const KEYS = [
   'PORT',
@@ -133,6 +149,51 @@ function formatValue(value) {
   return value;
 }
 
+function unquote(raw) {
+  const value = String(raw).trim();
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1).replace(/\\\\/g, '\\').replace(/\\"/g, '"').replace(/\\n/g, '\n');
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function allowlistFrom(value) {
+  return new Set(
+    String(value || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean),
+  );
+}
+
+/** Same rule as assertSelfHosted in src/config/env.js. Do not import that module. */
+function isSelfHostedUrl(rawUrl, allow) {
+  let url;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  const host = url.hostname;
+  if (LOCAL_HOSTS.has(host)) return true;
+  if (allow.has(host)) return true;
+  if (/^10\./.test(host)) return true;
+  if (/^192\.168\./.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
+  return false;
+}
+
+function hostnameOf(rawUrl) {
+  try {
+    return new URL(rawUrl).hostname || '(invalid url)';
+  } catch {
+    return '(invalid url)';
+  }
+}
+
 if (!existsSync(envPath)) {
   console.error('[sync-env] server/.env is missing');
   process.exit(1);
@@ -140,10 +201,25 @@ if (!existsSync(envPath)) {
 
 const raw = readFileSync(envPath, 'utf8').replace(/^\uFEFF/, '');
 const lines = raw.split(/\r?\n/);
+const existing = new Map();
+for (const line of lines) {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+  if (match) existing.set(match[1], unquote(match[2]));
+}
+const allowSource =
+  process.env.SELF_HOSTED_ALLOWED_HOSTS != null && process.env.SELF_HOSTED_ALLOWED_HOSTS !== ''
+    ? process.env.SELF_HOSTED_ALLOWED_HOSTS
+    : existing.get('SELF_HOSTED_ALLOWED_HOSTS') || '';
+const allow = allowlistFrom(allowSource);
 const pending = new Map();
+const skipped = [];
 for (const key of KEYS) {
   const value = process.env[key];
   if (value == null || value === '') continue;
+  if (URL_KEYS.has(key) && !isSelfHostedUrl(value, allow)) {
+    skipped.push(`${key} (${hostnameOf(value)})`);
+    continue;
+  }
   pending.set(key, `${key}=${formatValue(value)}`);
 }
 const seen = new Set();
@@ -158,5 +234,9 @@ for (const [key, line] of pending) {
 }
 const text = `${next.filter((line, index) => line !== '' || index !== next.length - 1).join('\n')}\n`;
 writeFileSync(envPath, text);
-const count = pending.size;
-console.log(`[sync-env] updated ${count} keys in server/.env`);
+for (const item of skipped) {
+  console.error(
+    `[sync-env] skipped ${item}; host is not loopback, a private range, or SELF_HOSTED_ALLOWED_HOSTS. Left the existing server/.env value in place.`,
+  );
+}
+console.log(`[sync-env] updated ${pending.size} keys in server/.env`);
