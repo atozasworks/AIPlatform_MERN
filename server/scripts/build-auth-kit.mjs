@@ -9,7 +9,7 @@
  * Production `npm ci --omit=dev` has no tsup. npx cannot load the kit's own
  * tsup.config.ts because that file `import`s `tsup` from the kit directory.
  * Compile with a local config that does not import tsup, after ensuring a
- * tsup binary exists next to the kit or the app.
+ * tsup binary exists next to the kit or the app....
  */
 import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -43,28 +43,27 @@ try {
   process.exit(1);
 }
 
-function tsupBin(root) {
-  const unix = path.join(root, 'node_modules', '.bin', 'tsup');
-  const win = `${unix}.cmd`;
-  if (existsSync(win)) return win;
-  if (existsSync(unix)) return unix;
-  return '';
+function tsupCli(root) {
+  const cli = path.join(root, 'node_modules', 'tsup', 'dist', 'cli-default.js');
+  return existsSync(cli) ? cli : '';
 }
 
 function compileWithTsup(dir) {
-  let bin = tsupBin(projectRoot) || tsupBin(dir);
-  if (!bin) {
+  let cli = tsupCli(projectRoot) || tsupCli(dir);
+  if (!cli) {
     console.log('[build-auth-kit] Installing tsup into the auth kit (production install has no compiler)...');
     execSync(
-      'npm install --no-save --no-package-lock --no-audit --no-fund tsup@8.5.1 typescript@5.9.3',
+      'npm install --prefix . --no-save --no-package-lock --no-audit --no-fund tsup@8.5.1 typescript@5.9.3',
       { cwd: dir, stdio: 'inherit' },
     );
-    bin = tsupBin(dir);
+    // npm hoists out of a package that already lives under node_modules,
+    // so the binary may land in the app root rather than the kit.
+    cli = tsupCli(dir) || tsupCli(projectRoot);
   }
-  if (!bin) {
+  if (!cli) {
     throw new Error('tsup is not installed');
   }
-  execFileSync(bin, ['--config', tsupConfig, '--no-dts'], {
+  execFileSync(process.execPath, [cli, '--config', tsupConfig, '--no-dts'], {
     cwd: dir,
     stdio: 'inherit',
   });

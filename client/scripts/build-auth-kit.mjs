@@ -8,7 +8,7 @@
  * rewrites the entry points to the emitted `index.mjs` / `index.js` bundles.
  *
  * Best-effort: failures log a warning rather than breaking `npm install`, and
- * the build is skipped when the dist already exists....
+ * the build is skipped when the dist already exists.
  */
 import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
