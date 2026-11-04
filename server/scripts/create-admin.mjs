@@ -12,7 +12,7 @@
  *   ADMIN_EMAIL=admin@atozasai.com ADMIN_PASSWORD='S3cret!' node scripts/create-admin.mjs
  *
  * If the user already exists it is granted the 'admin' role and its password is
- * reset to the provided value. Existing sessions are invalidated by bumping the
+ * reset to the provided value. Existing sessions are invalidated by bumping the...
  * refresh-token version.
  */
 import { dirname, resolve } from 'node:path';

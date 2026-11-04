@@ -870,7 +870,7 @@ jobs:
             echo "| Production build and bundle budget | $(label "${BUILD}") | yes |"
             echo "| Secure deploy, health check, rollback | $(label "${DEPLOY}") | yes |"
             echo "| Lighthouse | $(label "${LIGHTHOUSE}") | no |"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           fail=0
           for item in "${QUALITY}" "${BUILD}" "${DEPLOY}"; do
             if [ "${item}" = "failure" ] || [ "${item}" = "cancelled" ]; then
@@ -878,7 +878,7 @@ jobs:
             fi
           done
           if [ "${fail}" = "1" ]; then
-            echo "RESULT: FAIL" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "RESULT: FAIL quality=${QUALITY} build=${BUILD} deploy=${DEPLOY}" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           echo "RESULT: PASS" | tee -a "$GITHUB_STEP_SUMMARY"
