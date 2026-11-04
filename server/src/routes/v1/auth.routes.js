@@ -11,7 +11,9 @@ import { sendOtpEmail } from '../../services/email.service.js';
 import * as authController from '../../controllers/auth.controller.js';
 import '../../models/User.js';
 
-import { createAuthRouter } from 'atozas-auth-kit-express';
+// The published package points this import at dist/index.js, which is not in
+// the npm tarball. Load the prebuilt bundle shipped with the server instead.
+import { createAuthRouter } from '../../../vendor/atozas-auth-kit-express/index.js';
 
 const router = Router();
 

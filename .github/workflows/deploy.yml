@@ -675,8 +675,8 @@ jobs:
               tar -xf "${latest}/app.tar" -C "${APP_DIR}"
               if [ "${DEPLOY_BACKEND}" = "true" ]; then
                 (cd "${APP_DIR}/server" && npm ci --omit=dev --no-audit --no-fund) || true
-                if [ ! -f "${APP_DIR}/server/node_modules/atozas-auth-kit-express/dist/index.js" ]; then
-                  echo "Restored release is also missing atozas-auth-kit-express/dist/index.js, so the API cannot import atozas-auth-kit-express."
+                if [ ! -f "${APP_DIR}/server/vendor/atozas-auth-kit-express/index.js" ]; then
+                  echo "Restored release is missing server/vendor/atozas-auth-kit-express/index.js, so the API cannot load auth."
                 fi
                 pm2 startOrReload "${ECOSYSTEM}" --env production --update-env || true
                 pm2 save || true
@@ -712,8 +712,8 @@ jobs:
               fi
               write_ecosystem || rollback
               (cd "${APP_DIR}/server" && npm ci --omit=dev --no-audit --no-fund) || rollback
-              if [ ! -f "${APP_DIR}/server/node_modules/atozas-auth-kit-express/dist/index.js" ]; then
-                echo "atozas-auth-kit-express/dist/index.js was not created. Refusing to start the API."
+              if [ ! -f "${APP_DIR}/server/vendor/atozas-auth-kit-express/index.js" ]; then
+                echo "server/vendor/atozas-auth-kit-express/index.js is missing. Refusing to start the API."
                 rollback
               fi
               if pm2 describe "${PM2_API_NAME}" >/dev/null 2>&1; then
