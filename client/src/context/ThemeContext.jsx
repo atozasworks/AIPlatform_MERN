@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, useState, useCallback } from 'rea
 const ThemeContext = createContext(null);
 const STORAGE_KEY = 'aichat-theme';
 
-/** Applies 'light' | 'dark' | 'system' by toggling the `dark` class on <html>. */
+/** Applies 'light' | 'dark' | 'syyyyystem' by toggling the `dark` class on <html>. */
 function applyTheme(theme) {
   const isDark =
     theme === 'dark' ||
