@@ -44,9 +44,11 @@ const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
  * only be reachable because the request originates inside ATOZAS's network.
  */
 export function isPrivateAddress(ip) {
-  const version = net.isIP(ip);
-  if (version === 4) return isPrivateIPv4(ip);
-  if (version === 6) return isPrivateIPv6(ip);
+  // WHATWG URL reports an IPv6 host with its brackets still on (`[::1]`).
+  const literal = String(ip ?? '').replace(/^\[|\]$/g, '');
+  const version = net.isIP(literal);
+  if (version === 4) return isPrivateIPv4(literal);
+  if (version === 6) return isPrivateIPv6(literal);
   // Not an IP literal at all: refuse rather than guess.
   return true;
 }
@@ -137,10 +139,14 @@ export async function vetUrl(rawUrl) {
   }
 
   // An IP literal needs no DNS round trip, but does need the same range check.
-  if (net.isIP(url.hostname)) {
-    return isPrivateAddress(url.hostname)
+  // Strip the brackets URL keeps on IPv6 hosts. A bracketed name is not an IP
+  // to net.isIP, and looking it up is platform-dependent: Windows resolves
+  // `[::1]`, while Linux reports a DNS failure.
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  if (net.isIP(host)) {
+    return isPrivateAddress(host)
       ? { ok: false, reason: 'private_address' }
-      : { ok: true, url, addresses: [url.hostname] };
+      : { ok: true, url, addresses: [host] };
   }
 
   let resolved;
