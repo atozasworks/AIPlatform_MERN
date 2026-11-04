@@ -8,8 +8,7 @@
  * to the emitted files (tsup names the CJS bundle `index.js` and the ESM bundle
  * `index.mjs`, which the shipped `exports` map does not match).
  *
- * It is intentionally best-effort: a failure here logs a warning instead of
- * breaking `npm install`, and the build is skipped when the dist already exists.
+ * The compile must succeed: the API imports dist/index.mjs at boot.
  */
 import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -31,20 +30,38 @@ try {
   const distEsm = path.join(pkgDir, 'dist', 'index.mjs');
   if (!existsSync(distEsm)) {
     console.log(`[build-auth-kit] Compiling ${PKG} (no dist found)...`);
-    // npm publish of this package omits dist; tsup needs typescript present in
-    // the package tree. Production installs often omit server devDependencies,
-    // and a bare `npx tsup` cache won't see them either — install build tools
-    // into the package itself before compiling.
-    execSync('npm install --no-save --no-package-lock typescript tsup', {
-      cwd: pkgDir,
-      stdio: 'inherit',
-    });
-    execSync('npx tsup', { cwd: pkgDir, stdio: 'inherit' });
+    compileWithTsup(pkgDir);
+  }
+  if (!existsSync(distEsm)) {
+    throw new Error(`${PKG} dist/index.mjs is still missing after compile`);
   }
   patchEntryPoints(pkgDir);
   console.log(`[build-auth-kit] ${PKG} is ready.`);
 } catch (err) {
-  console.warn(`[build-auth-kit] Could not prepare ${PKG}: ${err.message}`);
+  console.error(`[build-auth-kit] Could not prepare ${PKG}: ${err.message}`);
+  process.exit(1);
+}
+
+function tsupBin(root) {
+  const unix = path.join(root, 'node_modules', '.bin', 'tsup');
+  const win = `${unix}.cmd`;
+  if (existsSync(win)) return win;
+  if (existsSync(unix)) return unix;
+  return '';
+}
+
+function compileWithTsup(dir) {
+  const local = tsupBin(projectRoot);
+  if (local) {
+    execSync(`"${local}"`, { cwd: dir, stdio: 'inherit' });
+    return;
+  }
+  // Production `npm ci --omit=dev` has no tsup. Pin 8.x so npx does not
+  // fetch tsup 9, which cannot resolve typescript from a sibling install.
+  execSync('npx --yes --package typescript@5.9.3 --package tsup@8.5.1 tsup', {
+    cwd: dir,
+    stdio: 'inherit',
+  });
 }
 
 function patchEntryPoints(dir) {

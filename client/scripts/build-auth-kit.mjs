@@ -8,7 +8,7 @@
  * rewrites the entry points to the emitted `index.mjs` / `index.js` bundles.
  *
  * Best-effort: failures log a warning rather than breaking `npm install`, and
- * the build is skipped when the dist already exists.
+ * the build is skipped when the dist already exists....
  */
 import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -30,12 +30,26 @@ try {
   const distEsm = path.join(pkgDir, 'dist', 'index.mjs');
   if (!existsSync(distEsm)) {
     console.log(`[build-auth-kit] Compiling ${PKG} (no dist found)...`);
-    execSync('npx --yes tsup', { cwd: pkgDir, stdio: 'inherit' });
+    const unix = path.join(projectRoot, 'node_modules', '.bin', 'tsup');
+    const win = `${unix}.cmd`;
+    const local = existsSync(win) ? win : existsSync(unix) ? unix : '';
+    if (local) {
+      execSync(`"${local}"`, { cwd: pkgDir, stdio: 'inherit' });
+    } else {
+      execSync('npx --yes --package typescript@5.9.3 --package tsup@8.5.1 tsup', {
+        cwd: pkgDir,
+        stdio: 'inherit',
+      });
+    }
+  }
+  if (!existsSync(distEsm)) {
+    throw new Error(`${PKG} dist/index.mjs is still missing after compile`);
   }
   patchEntryPoints(pkgDir);
   console.log(`[build-auth-kit] ${PKG} is ready.`);
 } catch (err) {
-  console.warn(`[build-auth-kit] Could not prepare ${PKG}: ${err.message}`);
+  console.error(`[build-auth-kit] Could not prepare ${PKG}: ${err.message}`);
+  process.exit(1);
 }
 
 function patchEntryPoints(dir) {

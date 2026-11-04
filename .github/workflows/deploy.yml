@@ -628,7 +628,10 @@ jobs:
               . "${NVM_DIR}/nvm.sh" || true
               nvm use 20 >/dev/null 2>&1 || nvm use 18 >/dev/null 2>&1 || nvm use --lts >/dev/null 2>&1 || true
             fi
-            if [ -d "${HOME}/.nvm/versions/node" ]; then
+            node20_bin="$(ls -d "${HOME}/.nvm/versions/node"/v20.*/bin 2>/dev/null | sort -V | tail -n 1 || true)"
+            if [ -n "${node20_bin}" ] && [ -x "${node20_bin}/node" ]; then
+              export PATH="${node20_bin}:${PATH}"
+            elif ! command -v node >/dev/null 2>&1 && [ -d "${HOME}/.nvm/versions/node" ]; then
               latest_node="$(find "${HOME}/.nvm/versions/node" -mindepth 2 -maxdepth 2 -type f -name node 2>/dev/null | sort | tail -n 1 || true)"
               if [ -n "${latest_node}" ]; then
                 export PATH="$(dirname "${latest_node}"):${PATH}"
@@ -639,10 +642,9 @@ jobs:
             STAGE="${APP_DIR}/.deploy-staging/incoming"
             command -v node >/dev/null 2>&1 || { echo "node is not on PATH for this site user. Install Node 20 with nvm."; exit 1; }
             command -v npm >/dev/null 2>&1 || { echo "npm is not on PATH"; exit 1; }
-            if ! command -v pm2 >/dev/null 2>&1; then
-              npm install -g pm2
-            fi
+            command -v pm2 >/dev/null 2>&1 || { echo "pm2 is not on PATH. Install it for this site user; this deploy will not replace the live PM2 daemon."; exit 1; }
             node -v
+            pm2 -v || true
             LOG_DIR="/var/log/atozas"
             if [ ! -d "${LOG_DIR}" ] || [ ! -w "${LOG_DIR}" ]; then
               if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
@@ -715,7 +717,7 @@ jobs:
               pm2 save || rollback
               pm2_ok=0
               for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-                if node -e 'const {execSync}=require("node:child_process"); const list=JSON.parse(execSync("pm2 jlist",{encoding:"utf8"})); const api=process.env.PM2_API_NAME; const worker=process.env.PM2_WORKER_NAME; const online=list.filter((p)=>p.name===api&&p.pm2_env&&p.pm2_env.status==="online").length; const workers=list.filter((p)=>p.name===worker).length; if(online<1||workers!==1){console.error("waiting for pm2 api="+online+" worker="+workers); process.exit(1);}'; then
+                if node -e 'const {execSync}=require("node:child_process"); const raw=execSync("pm2 jlist",{encoding:"utf8"}); const start=raw.indexOf("["); if(start<0){console.error("pm2 jlist produced no JSON"); process.exit(1);} const list=JSON.parse(raw.slice(start)); const api=process.env.PM2_API_NAME; const worker=process.env.PM2_WORKER_NAME; const online=list.filter((p)=>p.name===api&&p.pm2_env&&p.pm2_env.status==="online").length; const workers=list.filter((p)=>p.name===worker&&p.pm2_env&&p.pm2_env.status==="online").length; if(online<1||workers!==1){console.error("waiting for pm2 api="+online+" worker="+workers); process.exit(1);}'; then
                   pm2_ok=1
                   break
                 fi
