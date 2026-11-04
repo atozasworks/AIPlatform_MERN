@@ -494,7 +494,7 @@ jobs:
           fingerprint: ${{ secrets.VPS_SSH_FINGERPRINT }}
           port: ${{ secrets.VPS_PORT || 22 }}
           command_timeout: 10m
-          script_stop: true
+          script_stop: false
           envs: APP_DIR,DEPLOY_FRONTEND,DEPLOY_BACKEND,RELEASE_SHA
           script: |
             set -eu
@@ -605,7 +605,7 @@ jobs:
           fingerprint: ${{ secrets.VPS_SSH_FINGERPRINT }}
           port: ${{ secrets.VPS_PORT || 22 }}
           command_timeout: 30m
-          script_stop: true
+          script_stop: false
           envs: APP_DIR,DEPLOY_FRONTEND,DEPLOY_BACKEND,PM2_API_NAME,PM2_WORKER_NAME,REQUIRE_API_READY
           script: |
             set -eu
