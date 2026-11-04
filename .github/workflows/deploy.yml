@@ -662,8 +662,11 @@ jobs:
             mkdir -p "${RUNTIME_DIR}"
             ECOSYSTEM="${RUNTIME_DIR}/ecosystem.config.cjs"
             write_ecosystem() {
-              # Fork mode. The running PM2 daemon launches cluster workers via
-              # server/node_modules/pm2, and npm ci deletes that directory.
+              # The running PM2 daemon was started from server/node_modules/pm2.
+              # It spawns every app through lib/ProcessContainerFork.js there.
+              # pm2@7.1.0 is a production dependency so npm ci puts that file back.
+              # Fork mode avoids the cluster launcher. Do not pm2 update: that
+              # restarts llama and the live API.
               sed \
                 -e "s|/var/log/atozas|${LOG_DIR}|g" \
                 -e "s|name: 'atozas-api'|name: '${PM2_API_NAME}'|g" \
@@ -725,6 +728,10 @@ jobs:
               (cd "${APP_DIR}/server" && npm ci --omit=dev --no-audit --no-fund) || rollback
               if [ ! -f "${APP_DIR}/server/vendor/atozas-auth-kit-express/index.js" ]; then
                 echo "server/vendor/atozas-auth-kit-express/index.js is missing. Refusing to start the API."
+                rollback
+              fi
+              if [ ! -f "${APP_DIR}/server/node_modules/pm2/lib/ProcessContainerFork.js" ]; then
+                echo "server/node_modules/pm2/lib/ProcessContainerFork.js is missing. The running PM2 daemon cannot spawn the API."
                 rollback
               fi
               echo "Starting ${PM2_API_NAME} in fork mode."
