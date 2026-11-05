@@ -142,6 +142,20 @@ const KEYS = [
   'ATOZAS_AUTO_REDIRECT',
 ];
 
+function cleanIncoming(value) {
+  let next = String(value)
+    .replace(/^\uFEFF/, '')
+    .replace(/[\u200B\u200C\u200D\uFEFF]/g, '')
+    .replace(/\r/g, '');
+  if (
+    next.length >= 2 &&
+    ((next.startsWith('"') && next.endsWith('"')) || (next.startsWith("'") && next.endsWith("'")))
+  ) {
+    next = unquote(next);
+  }
+  return next;
+}
+
 function formatValue(value) {
   if (/[\s#"'\n\\]/.test(value)) {
     return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`;
@@ -216,12 +230,12 @@ const skipped = [];
 for (const key of KEYS) {
   let value = process.env[key];
   if (value == null || value === '') continue;
-  if (key === 'GOOGLE_CLIENT_ID') {
-    value = value.replace(/^\uFEFF/, '').trim();
-    if (!value) continue;
-  }
+  value = cleanIncoming(value);
+  if (key === 'GOOGLE_CLIENT_ID' || URL_KEYS.has(key)) value = value.trim();
+  if (value === '') continue;
   if (URL_KEYS.has(key) && !isSelfHostedUrl(value, allow)) {
-    skipped.push(`${key} (${hostnameOf(value)})`);
+    const host = hostnameOf(value);
+    skipped.push(host === '(invalid url)' ? `${key} (not a url)` : `${key} (${host})`);
     continue;
   }
   pending.set(key, `${key}=${formatValue(value)}`);
