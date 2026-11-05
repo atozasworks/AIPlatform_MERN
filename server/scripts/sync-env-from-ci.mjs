@@ -214,8 +214,12 @@ const allow = allowlistFrom(allowSource);
 const pending = new Map();
 const skipped = [];
 for (const key of KEYS) {
-  const value = process.env[key];
+  let value = process.env[key];
   if (value == null || value === '') continue;
+  if (key === 'GOOGLE_CLIENT_ID') {
+    value = value.replace(/^\uFEFF/, '').trim();
+    if (!value) continue;
+  }
   if (URL_KEYS.has(key) && !isSelfHostedUrl(value, allow)) {
     skipped.push(`${key} (${hostnameOf(value)})`);
     continue;

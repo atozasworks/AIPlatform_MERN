@@ -6,7 +6,9 @@ import { useAuth } from '../store/auth.js';
 import AuthLayout from '../components/auth/AuthLayout.jsx';
 import AtozasButton from '../components/auth/AtozasButton.jsx';
 
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_ID = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || '')
+  .replace(/^\uFEFF/, '')
+  .trim();
 const GOOGLE_ALLOWED_ORIGINS = String(import.meta.env.VITE_GOOGLE_ALLOWED_ORIGINS || '')
   .split(',')
   .map((value) => value.trim())

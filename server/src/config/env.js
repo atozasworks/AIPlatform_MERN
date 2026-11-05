@@ -213,7 +213,9 @@ export const env = {
     },
     google: {
       // Same value is exposed to the client as VITE_GOOGLE_CLIENT_ID at build time.
-      clientId: process.env.GOOGLE_CLIENT_ID || '',
+      clientId: String(process.env.GOOGLE_CLIENT_ID || '')
+        .replace(/^\uFEFF/, '')
+        .trim(),
       get enabled() {
         return Boolean(this.clientId);
       },

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_ID = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || '')
+  .replace(/^\uFEFF/, '')
+  .trim();
 const GSI_SRC = 'https://accounts.google.com/gsi/client';
 
 let gsiPromise = null;
