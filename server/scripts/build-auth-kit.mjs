@@ -9,7 +9,7 @@
  * The bundle that Node can load is committed at
  * `vendor/atozas-auth-kit-express/`. This script copies it into the installed
  * package so `import 'atozas-auth-kit-express'` resolves. The auth route also
- * imports the vendored file directly.
+ * imports the vendored file directly...........
  */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
