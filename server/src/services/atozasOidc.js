@@ -94,7 +94,9 @@ function pruneUndefined(obj) {
 }
 
 /** Builds the provider authorize URL for the browser redirect. */
-export async function buildAuthorizeUrl({ state, codeChallenge, nonce }) {
+// extra: { prompt: 'none' } for the silent check, or { login_method, login_hint } for the button
+// pressed here (ATOZAS then opens that login: one login for every AtoZ app).
+export async function buildAuthorizeUrl({ state, codeChallenge, nonce, extra = {} }) {
   const { authorization_endpoint: authorizeEndpoint } = await getEndpoints();
   if (!authorizeEndpoint) throw new AppError(500, 'ATOZAS authorize endpoint is not configured.');
 
@@ -109,6 +111,9 @@ export async function buildAuthorizeUrl({ state, codeChallenge, nonce }) {
     nonce,
   });
   if (cfg.homepageKey) params.set('homepage_key', cfg.homepageKey);
+  for (const [key, value] of Object.entries(extra || {})) {
+    if (value) params.set(key, String(value));
+  }
 
   const sep = authorizeEndpoint.includes('?') ? '&' : '?';
   return `${authorizeEndpoint}${sep}${params.toString()}`;
@@ -217,3 +222,30 @@ export default {
   fetchUserInfo,
   revokeToken,
 };
+
+/**
+ * The silent check (prompt=none) needs ATOZAS's support for it; an older ATOZAS would show its login
+ * page to every guest. On only once ATOZAS reports `pending_login_method` in /sso/session.php
+ * (checked at most every 10 minutes). ATOZAS_SILENT=1 / 0 forces it on / off.
+ */
+let silentCache = { at: 0, ok: false };
+export async function isSilentSupported() {
+  if (process.env.ATOZAS_SILENT === '1') return true;
+  if (process.env.ATOZAS_SILENT === '0') return false;
+  if (!cfg.issuer) return false;
+  if (Date.now() - silentCache.at < 10 * 60 * 1000) return silentCache.ok;
+  let ok = false;
+  try {
+    const base = cfg.issuer.replace(/\/+$/, '').replace(/\/sso$/, '');
+    const res = await fetch(`${base}/sso/session.php`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(4000),
+    });
+    const data = await res.json().catch(() => null);
+    ok = res.ok && !!data && Object.prototype.hasOwnProperty.call(data, 'pending_login_method');
+  } catch {
+    ok = false;
+  }
+  silentCache = { at: Date.now(), ok };
+  return ok;
+}
