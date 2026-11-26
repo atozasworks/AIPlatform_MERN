@@ -64,6 +64,8 @@ function safeReturnTo(raw) {
   if (!raw.startsWith('/')) return '/';
   if (raw.startsWith('//') || raw.startsWith('/\\')) return '/';
   if (raw.includes('\\') || raw.includes('\n') || raw.includes('\r')) return '/';
+  // The callback writes returnTo into an HTML page: no characters that could leave the attribute/script.
+  if (/[<>"'`\s]/.test(raw)) return '/';
   if (raw.startsWith('/auth/')) return '/';
   return raw;
 }
@@ -98,9 +100,14 @@ if (cfg.enabled) {
 }
 
 // ── Public status probe (always mounted; exposes no secrets) ──────────────────
-router.get('/atozas/status', (_req, res) => {
-  res.json({ success: true, data: { enabled: cfg.enabled, autoRedirect: cfg.autoRedirect } });
-});
+router.get(
+  '/atozas/status',
+  asyncHandler(async (_req, res) => {
+    // `silent`: the site may run the silent check for guests (/auth/atozas/silent).
+    const silent = cfg.enabled && (await oidc.isSilentSupported());
+    res.json({ success: true, data: { enabled: cfg.enabled, autoRedirect: cfg.autoRedirect, silent } });
+  }),
+);
 
 /**
  * Root logout. Always clears the app's JWT cookies; additionally tears down the
@@ -136,52 +143,81 @@ router.post(
 
 // ── OIDC endpoints — only when SSO is enabled ─────────────────────────────────
 if (cfg.enabled) {
+  const LOGIN_METHODS = new Set(['google', 'otp', 'atozas']);
+
+  // One login for every AtoZ app:
+  //   /auth/atozas?method=google|otp|atozas&login_hint=  the button pressed here; ATOZAS opens that login
+  //   /auth/atozas/silent?returnTo=/path                 prompt=none: a visitor signed in at ATOZAS
+  //                                                      (homepage or another AtoZ app) is signed in here
+  //                                                      with no click; anyone else returns as a guest
+  router.get(
+    '/atozas/silent',
+    authLimiter,
+    asyncHandler(async (req, res) => {
+      if (req.session?.userId || !(await oidc.isSilentSupported())) {
+        return res.redirect(safeReturnTo(req.query.returnTo));
+      }
+      return startLogin(req, res, true);
+    }),
+  );
+
   // GET /auth/atozas — begin Authorization Code + PKCE (S256).
   router.get(
     '/atozas',
     authLimiter,
-    asyncHandler(async (req, res) => {
-      const state = oidc.createState();
-      const nonce = oidc.createNonce();
-      const { verifier, challenge } = oidc.createPkce();
-      const returnTo = safeReturnTo(req.query.returnTo);
-      const createdAt = Date.now();
-
-      // Durable flow record: callback looks this up by `state` even when the
-      // browser drops the SSO session cookie (Chrome/Edge cross-site quirk).
-      await OidcFlow.findOneAndUpdate(
-        { state },
-        {
-          state,
-          nonce,
-          verifier,
-          returnTo,
-          expiresAt: new Date(createdAt + OIDC_FLOW_TTL_MS),
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true },
-      );
-
-      // Best-effort mirror into the session for same-browser restores / logout.
-      if (req.session) {
-        req.session.oidc = { state, nonce, verifier, returnTo, createdAt };
-      }
-
-      const authorizeUrl = await oidc.buildAuthorizeUrl({ state, codeChallenge: challenge, nonce });
-
-      const redirect = () => res.redirect(authorizeUrl);
-      if (req.session) {
-        req.session.save((err) => {
-          if (err) {
-            logger.error({ err: err?.message }, 'ATOZAS: failed to persist login session');
-            // Flow is already in Mongo; still proceed to the IdP.
-          }
-          return redirect();
-        });
-        return;
-      }
-      return redirect();
-    }),
+    asyncHandler((req, res) => startLogin(req, res, false)),
   );
+
+  async function startLogin(req, res, silent) {
+    const state = oidc.createState();
+    const nonce = oidc.createNonce();
+    const { verifier, challenge } = oidc.createPkce();
+    const returnTo = safeReturnTo(req.query.returnTo);
+    const createdAt = Date.now();
+
+    // Durable flow record: callback looks this up by `state` even when the
+    // browser drops the SSO session cookie (Chrome/Edge cross-site quirk).
+    await OidcFlow.findOneAndUpdate(
+      { state },
+      {
+        state,
+        nonce,
+        verifier,
+        returnTo,
+        silent,
+        expiresAt: new Date(createdAt + OIDC_FLOW_TTL_MS),
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+
+    // Best-effort mirror into the session for same-browser restores / logout.
+    if (req.session) {
+      req.session.oidc = { state, nonce, verifier, returnTo, createdAt, silent };
+    }
+
+    const method = String(req.query.method || '').toLowerCase();
+    const hint = String(req.query.login_hint || '').trim().toLowerCase();
+    const extra = silent
+      ? { prompt: 'none' }
+      : {
+          login_method: LOGIN_METHODS.has(method) ? method : '',
+          login_hint: hint.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(hint) ? hint : '',
+        };
+    const authorizeUrl = await oidc.buildAuthorizeUrl({ state, codeChallenge: challenge, nonce, extra });
+
+    const redirect = () => res.redirect(authorizeUrl);
+    if (req.session) {
+      req.session.save((err) => {
+        if (err) {
+          logger.error({ err: err?.message }, 'ATOZAS: failed to persist login session');
+          // Flow is already in Mongo; still proceed to the IdP.
+        }
+        return redirect();
+      });
+      return;
+    }
+    return redirect();
+  }
 
   // GET /auth/atozas/callback — validate state, exchange code, find/create user.
   router.get(
@@ -190,6 +226,16 @@ if (cfg.enabled) {
       const { code, state, error: providerError } = req.query;
 
       if (providerError) {
+        // Our own silent check: "not signed in at ATOZAS" -> back to the page as a guest.
+        if (state) {
+          const own = await OidcFlow.findOneAndDelete({ state: String(state) });
+          const sessFlow = req.session?.oidc;
+          const silentFlow = own?.silent || (sessFlow?.silent && sessFlow.state === String(state));
+          if (silentFlow) {
+            if (req.session) delete req.session.oidc;
+            return res.redirect(safeReturnTo(own?.returnTo || sessFlow?.returnTo));
+          }
+        }
         logger.warn({ error: String(providerError) }, 'ATOZAS returned an authorization error');
         return res.redirect('/login?sso_error=denied');
       }
