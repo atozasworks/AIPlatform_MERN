@@ -7,7 +7,7 @@ import { atozasStartUrl, beginAtozasLogin } from '../../lib/sso.js';
  * (`GET /auth/atozas`), which starts Authorization Code + PKCE server-side and
  * redirects to the ATOZAS identity provider. No tokens or secrets are ever
  * handled in the browser. Rendered by LoginPage only when the server reports
- * ATOZAS SSO is enabled.
+ * ATOZAS SSO is enabled.....
  */
 export default function AtozasButton({ returnTo = '/', method = 'atozas', label = 'Continue with ATOZAS', mark = 'A' }) {
   const href = atozasStartUrl(returnTo, { method });

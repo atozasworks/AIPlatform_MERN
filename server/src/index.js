@@ -10,7 +10,7 @@ import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 
 /**
- * API bootstrap: connect MongoDB, start HTTP + Socket.IO, handle graceful
+ * APIiiii bootstrap: connect MongoDB, start HTTP + Socket.IO, handle graceful
  * shutdown so in-flight SSE relays close cleanly.
  *
  * Inference does not run here — see src/worker.js.
