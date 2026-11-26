@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { api } from '../lib/api.js';
+import { markAtozasOptOut, maybeAtozasSilentCheck } from '../lib/sso.js';
 
 /**
  * Authentication state. The source of truth is the HTTP-only cookie on the
@@ -68,6 +69,9 @@ export const useAuth = create((set, get) => ({
     } catch {
       /* ignore — treat as anonymous */
     }
+    // Signed in on the AtoZ homepage or another AtoZ app? Sign in here too, with no click.
+    // (Keeps status 'loading' while the browser leaves for the check.)
+    if (await maybeAtozasSilentCheck()) return;
     clearSessionTimer();
     set({ user: null, status: 'anonymous', sessionExpiresAt: null });
   },
@@ -93,6 +97,8 @@ export const useAuth = create((set, get) => ({
 
   async logout() {
     clearSessionTimer();
+    // Stay signed out here (all tabs) even while signed in at ATOZAS, until a login button is pressed.
+    markAtozasOptOut();
     // Clear the app's JWT cookie session (existing behaviour).
     await api.post('/auth/logout').catch(() => {});
     // Also tear down any ATOZAS SSO session so /auth/atozas/me can't restore it.

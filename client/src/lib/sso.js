@@ -96,8 +96,84 @@ export function isLocalDevHost() {
   }
 }
 
-/** Builds the backend OIDC entrypoint URL, preserving a safe same-site returnTo. */
-export function atozasStartUrl(returnTo = '/') {
+/**
+ * Builds the backend OIDC entrypoint URL, preserving a safe same-site returnTo.
+ * method = the button pressed here ('google' | 'otp' | 'atozas'); ATOZAS opens that login, so one
+ * login works on every AtoZ app. loginHint = email to prefill for OTP.
+ */
+export function atozasStartUrl(returnTo = '/', { method = '', loginHint = '' } = {}) {
   const target = typeof returnTo === 'string' && returnTo.startsWith('/') ? returnTo : '/';
-  return `/auth/atozas?returnTo=${encodeURIComponent(target)}`;
+  const params = new URLSearchParams({ returnTo: target });
+  if (method) params.set('method', method);
+  if (loginHint) params.set('login_hint', loginHint);
+  return `/auth/atozas?${params.toString()}`;
+}
+
+// Logout here: no silent sign-in on this device (all tabs) until a login button is pressed.
+const OPTOUT_KEY = 'atozas.optout.v1';
+const SILENT_KEY = 'atozas.silentcheck.v1';
+
+function store(kind) {
+  try {
+    return kind === 'local' ? window.localStorage : window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function markAtozasOptOut() {
+  try {
+    store('local')?.setItem(OPTOUT_KEY, '1');
+  } catch {
+    /* ignore */
+  }
+}
+
+/** A login button was pressed: allow silent sign-in again and go to ATOZAS. */
+export function beginAtozasLogin(returnTo = '/', options = {}) {
+  try {
+    store('local')?.removeItem(OPTOUT_KEY);
+  } catch {
+    /* ignore */
+  }
+  clearManualLogin();
+  window.location.assign(atozasStartUrl(returnTo, options));
+}
+
+/**
+ * Silent check: someone already signed in at ATOZAS (homepage or another AtoZ app) comes back
+ * signed in here with no click (/auth/atozas/silent, prompt=none); anyone else stays a guest.
+ * Once per tab, at most every 5 minutes across tabs, never after Logout here until a login
+ * button is pressed. Returns true if it redirected.
+ */
+export async function maybeAtozasSilentCheck() {
+  if (typeof window === 'undefined' || isLocalDevHost()) return false;
+  try {
+    if (store('local')?.getItem(OPTOUT_KEY) === '1') return false;
+    if (Number(store('session')?.getItem(SILENT_KEY) || 0) > 0) return false;
+    if (Date.now() - Number(store('local')?.getItem(SILENT_KEY) || 0) < 5 * 60 * 1000) return false;
+  } catch {
+    return false;
+  }
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('sso_error')) return false;
+  if (/bot|crawl|spider|preview/i.test(navigator.userAgent || '')) return false;
+  let status = null;
+  try {
+    const res = await fetch('/auth/atozas/status', { headers: { Accept: 'application/json' } });
+    status = res.ok ? (await res.json())?.data : null;
+  } catch {
+    status = null;
+  }
+  if (!status?.enabled || !status?.silent) return false;
+  const now = String(Date.now());
+  try {
+    store('session')?.setItem(SILENT_KEY, now);
+    store('local')?.setItem(SILENT_KEY, now);
+  } catch {
+    /* ignore */
+  }
+  const next = `${window.location.pathname}${window.location.search}` || '/';
+  window.location.replace(`/auth/atozas/silent?returnTo=${encodeURIComponent(next)}`);
+  return true;
 }

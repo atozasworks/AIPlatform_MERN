@@ -5,6 +5,7 @@ import 'atozas-react-auth-kit/styles.css';
 import { useAuth } from '../store/auth.js';
 import AuthLayout from '../components/auth/AuthLayout.jsx';
 import AtozasButton from '../components/auth/AtozasButton.jsx';
+import { beginAtozasLogin } from '../lib/sso.js';
 
 const GOOGLE_CLIENT_ID = String(import.meta.env.VITE_GOOGLE_CLIENT_ID || '')
   .replace(/^\uFEFF/, '')
@@ -35,6 +36,48 @@ export default function LoginPage() {
     <AuthProvider apiUrl="/api/v1/auth" googleClientId={googleClientId} enableLocalStorage>
       <LoginInner />
     </AuthProvider>
+  );
+}
+
+function AtozasOneLogin() {
+  const [email, setEmail] = useState('');
+  return (
+    <>
+      <div className="mb-3">
+        <AtozasButton returnTo="/" />
+      </div>
+      <div className="mb-5">
+        <AtozasButton returnTo="/" method="google" label="Continue with Google" mark="G" />
+      </div>
+      <div className="mb-5 flex items-center gap-3 text-xs uppercase tracking-wide text-slate-400">
+        <span className="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
+        or with email
+        <span className="h-px flex-1 bg-slate-200 dark:bg-slate-700" />
+      </div>
+      <form
+        className="space-y-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          beginAtozasLogin('/', { method: 'otp', loginHint: email.trim().toLowerCase() });
+        }}
+      >
+        <input
+          type="email"
+          required
+          autoComplete="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@example.com"
+          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+        />
+        <button
+          type="submit"
+          className="w-full rounded-full bg-brand-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-700"
+        >
+          Email me a login code
+        </button>
+      </form>
+    </>
   );
 }
 
@@ -82,13 +125,12 @@ function LoginInner() {
         </div>
       )}
 
-      {sso.enabled && (
-        <div className="mb-5">
-          <AtozasButton returnTo="/" />
-        </div>
-      )}
-
-      {(hasGoogle || sso.enabled) && (
+      {sso.enabled ? (
+        // ATOZAS on: Google and the email code log in at ATOZAS, so one login works on every AtoZ app.
+        <AtozasOneLogin />
+      ) : (
+      <>
+      {hasGoogle && (
         <>
           {hasGoogle && (
             <div className="mb-5 flex justify-center">
@@ -104,6 +146,8 @@ function LoginInner() {
       )}
 
       <EmailOtpLogin onSuccess={onSuccess} onError={onError} />
+      </>
+      )}
 
       <p className="mt-6 text-center text-sm text-slate-500">
         <Link to="/" className="font-medium text-brand-600 hover:underline dark:text-brand-400">
