@@ -309,7 +309,7 @@ export const useChat = create((set, get) => ({
    * Edits are unlimited: any completed user message can be re-edited any number
    * of times; each save opens another sibling version (`1/2`, `1/3`, …).
    */
-  async editMessage(messageId, content) {
+  async editMessage(messageId, content, { attachments } = {}) {
     const text = content.trim();
     if (!text) return;
 
@@ -331,13 +331,18 @@ export const useChat = create((set, get) => ({
       await get().sendMessage(text, {
         parentMessageId: parentMessageId ?? null,
         allowFromEdit: true,
+        attachments,
       });
     } catch (err) {
       get()._endGeneration(err.message || 'Could not save the edit. Please try again.');
     }
   },
 
-  async sendMessage(text, { parentMessageId, allowFromEdit = false } = {}) {
+  /**
+   * `attachments` is display metadata only (`{ name, kind, thumbnail? }`): the
+   * model reads the attachment text that is already inside `text`.
+   */
+  async sendMessage(text, { parentMessageId, allowFromEdit = false, attachments = [] } = {}) {
     if (get().generation.phase !== PHASE.IDLE) {
       if (allowFromEdit) {
         await get()._stopActiveGeneration();
@@ -364,6 +369,7 @@ export const useChat = create((set, get) => ({
       id: userId,
       role: 'user',
       content: text,
+      attachments,
       status: 'complete',
       parentMessage: resolvedParent,
       createdAt: new Date().toISOString(),
@@ -540,6 +546,7 @@ export const useChat = create((set, get) => ({
         model: get().selectedModel || undefined,
         profile: get().selectedProfile,
         clientMessageId,
+        ...(attachments?.length ? { attachments } : {}),
         // Always sent explicitly so edit siblings land on the right parent.
         parentMessageId: resolvedParent,
       },

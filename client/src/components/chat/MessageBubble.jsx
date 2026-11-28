@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import Markdown from './Markdown.jsx';
 import Citations from './Citations.jsx';
+import MessageAttachments from './MessageAttachments.jsx';
 import { useChat } from '../../store/chat.js';
+import { DEFAULT_ATTACHMENT_PROMPT, getMessageDisplay } from '../../lib/attachments.js';
 
 /** Grow the edit textarea with content (height only; width is layout-controlled). */
 function resizeEditArea(el) {
@@ -17,9 +19,15 @@ function resizeEditArea(el) {
  */
 export default function MessageBubble({ message }) {
   const isUser = message.role === 'user';
+  // User bubbles show the typed prompt and the attachments themselves; the
+  // text extracted from attachments (sent to the model) stays hidden.
+  const display = isUser
+    ? getMessageDisplay(message)
+    : { text: message.content, blocks: '', attachments: [] };
+  const hasHiddenBlocks = Boolean(display.blocks);
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(message.content);
+  const [draft, setDraft] = useState(display.text);
   const [privacyBusy, setPrivacyBusy] = useState(false);
   const [privacyError, setPrivacyError] = useState(null);
   const editRef = useRef(null);
@@ -33,7 +41,7 @@ export default function MessageBubble({ message }) {
   const canMarkPrivate = !isTemp && !message.isPrivate && message.status !== 'streaming';
 
   const copy = async () => {
-    await navigator.clipboard.writeText(message.content);
+    await navigator.clipboard.writeText(display.text);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -43,25 +51,33 @@ export default function MessageBubble({ message }) {
   }, [editing, draft]);
 
   const startEdit = () => {
-    setDraft(message.content);
+    setDraft(display.text);
     setEditing(true);
   };
 
   const cancelEdit = () => {
-    setDraft(message.content);
+    setDraft(display.text);
     setEditing(false);
   };
 
   const saveEdit = async () => {
-    const text = draft.trim();
-    if (!text || text === message.content) {
+    const typed = draft.trim();
+    if (!typed && !hasHiddenBlocks) {
+      setEditing(false);
+      return;
+    }
+    // Re-attach the hidden attachment text so the edited turn still grounds on it.
+    const text = hasHiddenBlocks
+      ? `${typed || DEFAULT_ATTACHMENT_PROMPT}\n\n${display.blocks}`
+      : typed;
+    if (text === message.content) {
       setEditing(false);
       return;
     }
     if (isTemp) return;
     setEditing(false);
     // editMessage stops any in-flight generation, so re-edits are never blocked.
-    await editMessage(message.id, text);
+    await editMessage(message.id, text, { attachments: display.attachments });
   };
 
   const makePrivate = async () => {
@@ -87,6 +103,11 @@ export default function MessageBubble({ message }) {
         <div className={editing ? 'w-full max-w-none' : 'max-w-[80%]'}>
           {editing ? (
             <div className="w-full rounded-2xl rounded-br-md border border-brand-300 bg-white p-3 dark:border-brand-700 dark:bg-slate-900">
+              {display.attachments.length > 0 && (
+                <div className="mb-2">
+                  <MessageAttachments attachments={display.attachments} align="start" />
+                </div>
+              )}
               <textarea
                 ref={editRef}
                 value={draft}
@@ -95,6 +116,7 @@ export default function MessageBubble({ message }) {
                   resizeEditArea(e.target);
                 }}
                 rows={3}
+                placeholder={hasHiddenBlocks ? 'Ask about the attachment (optional)' : undefined}
                 className="min-h-[4.5rem] max-h-60 w-full resize-y rounded-lg bg-transparent px-2 py-2 text-sm leading-relaxed outline-none"
                 autoFocus
               />
@@ -109,7 +131,7 @@ export default function MessageBubble({ message }) {
                 <button
                   type="button"
                   onClick={saveEdit}
-                  disabled={!draft.trim()}
+                  disabled={!draft.trim() && !hasHiddenBlocks}
                   className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-40"
                 >
                   Save & submit
@@ -118,13 +140,22 @@ export default function MessageBubble({ message }) {
             </div>
           ) : (
             <>
-              <div className="whitespace-pre-wrap rounded-2xl rounded-br-md bg-brand-600 px-4 py-2.5 text-white">
-                {message.content}
-              </div>
+              <MessageAttachments attachments={display.attachments} />
+              {display.text && (
+                <div
+                  className={`ml-auto w-fit max-w-full whitespace-pre-wrap rounded-2xl rounded-br-md bg-brand-600 px-4 py-2.5 text-white ${
+                    display.attachments.length ? 'mt-2' : ''
+                  }`}
+                >
+                  {display.text}
+                </div>
+              )}
               <div className="mt-1.5 flex items-center justify-end gap-1 text-slate-400">
-                <IconButton onClick={copy} title={copied ? 'Copied' : 'Copy'} label={copied ? 'Copied' : 'Copy'}>
-                  {copied ? <CheckIcon /> : <CopyIcon />}
-                </IconButton>
+                {display.text && (
+                  <IconButton onClick={copy} title={copied ? 'Copied' : 'Copy'} label={copied ? 'Copied' : 'Copy'}>
+                    {copied ? <CheckIcon /> : <CopyIcon />}
+                  </IconButton>
+                )}
                 {!isTemp && (
                   <IconButton onClick={startEdit} title="Edit" label="Edit">
                     <EditIcon />

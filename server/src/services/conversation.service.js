@@ -247,7 +247,7 @@ export async function getSharedConversation(token) {
     status: { $nin: ['pending', 'streaming', 'error'] },
   })
     .sort({ createdAt: 1 })
-    .select('role content status createdAt')
+    .select('role content attachments status createdAt')
     .lean();
 
   const messages = msgs
@@ -256,6 +256,7 @@ export async function getSharedConversation(token) {
       id: String(m._id),
       role: m.role,
       content: m.content || '',
+      attachments: Array.isArray(m.attachments) ? m.attachments : [],
       status: m.status || 'complete',
       createdAt: m.createdAt,
     }));

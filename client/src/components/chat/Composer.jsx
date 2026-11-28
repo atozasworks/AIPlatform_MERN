@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { useChat } from '../../store/chat.js';
 import { api } from '../../lib/api.js';
 import QueueStatus from './QueueStatus.jsx';
+import {
+  DEFAULT_ATTACHMENT_PROMPT,
+  attachmentBlock,
+  createImageThumbnail,
+} from '../../lib/attachments.js';
 
 /**
  * Broad picker list. Final acceptance is decided server-side after text
@@ -12,6 +17,8 @@ import QueueStatus from './QueueStatus.jsx';
 const ACCEPTED =
   '.pdf,.docx,.doc,.xlsx,.xls,.xlsm,.ods,.txt,.md,.markdown,.csv,.tsv,.json,.html,.htm,.log,.xml,.yaml,.yml,.rtf,.js,.ts,.jsx,.tsx,.py,.java,.c,.cpp,.h,.css,.sql,.ini,.conf,.env,.sh,.bat,.ps1,.go,.rs,.php,.rb,.swift,.kt,.tex,.png,.jpg,.jpeg,.webp,.bmp,.svg';
 const MAX_BYTES = 2 * 1024 * 1024; // matches RAG_MAX_UPLOAD_BYTES default
+/** Combined thumbnail size per message; keeps the request under the 1 MB JSON limit. */
+const MAX_THUMBNAILS_CHARS = 720_000;
 
 /**
  * Sticky prompt composer. Enter sends, Shift+Enter adds a newline. While a
@@ -48,19 +55,30 @@ export default function Composer() {
     if (isStreaming || uploading) return;
     if (!value && readyAttachments.length === 0) return;
 
+    // The extracted text goes to the model inside `content`; the chat bubble
+    // hides it and shows the attachment itself from `sentAttachments`.
     let content = value;
+    const sentAttachments = [];
     if (readyAttachments.length) {
       const budget = 80_000;
       let used = 0;
+      let thumbnailChars = 0;
       const blocks = [];
       for (const a of readyAttachments) {
         const remaining = budget - used;
         if (remaining < 200) break;
         const body = String(a.content || '').slice(0, remaining);
-        blocks.push(`--- Attached file: ${a.title} ---\n${body}`);
+        blocks.push(attachmentBlock(a.title, body));
         used += body.length;
+
+        const meta = { name: a.title, kind: a.isImage ? 'image' : 'file' };
+        if (a.thumbnail && thumbnailChars + a.thumbnail.length <= MAX_THUMBNAILS_CHARS) {
+          meta.thumbnail = a.thumbnail;
+          thumbnailChars += a.thumbnail.length;
+        }
+        sentAttachments.push(meta);
       }
-      const prompt = value || 'Please use the attached document(s) to answer.';
+      const prompt = value || DEFAULT_ATTACHMENT_PROMPT;
       content = `${prompt}\n\n${blocks.join('\n\n')}`;
     }
 
@@ -69,7 +87,7 @@ export default function Composer() {
     setAttachments([]);
     setAttachError(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-    await sendMessage(content);
+    await sendMessage(content, { attachments: sentAttachments });
   };
 
   const onKeyDown = (e) => {
@@ -108,7 +126,7 @@ export default function Composer() {
       const previewUrl = isImage ? URL.createObjectURL(file) : null;
       setAttachments((prev) => [
         ...prev,
-        { localId, title: file.name, status: 'uploading', previewUrl },
+        { localId, title: file.name, status: 'uploading', previewUrl, isImage },
       ]);
 
       try {
@@ -116,7 +134,12 @@ export default function Composer() {
         form.append('file', file, file.name);
         form.append('title', file.name);
 
-        const { document, reused, content } = await api.upload('/rag/documents/upload', form);
+        // A small copy of the image is stored with the message so the chat
+        // shows the picture (not its OCR text), including after a reload.
+        const [{ document, reused, content }, thumbnail] = await Promise.all([
+          api.upload('/rag/documents/upload', form),
+          isImage ? createImageThumbnail(file) : Promise.resolve(null),
+        ]);
         if (!String(content || '').trim()) {
           throw new Error('No readable text was found in this file.');
         }
@@ -132,6 +155,7 @@ export default function Composer() {
                   status: 'ready',
                   reused: Boolean(reused),
                   content,
+                  thumbnail,
                 }
               : a,
           ),

@@ -25,6 +25,23 @@ export const chatStreamSchema = {
     model: z.string().trim().max(128).optional(),
     // Idempotency key: prevents duplicate messages on retry or refresh.
     clientMessageId: z.string().trim().max(64).optional(),
+    // Display-only metadata for attached files. The model reads the attachment
+    // text already inside `content`; this lets the chat show the image itself
+    // (a small JPEG thumbnail made in the browser) instead of that text.
+    attachments: z
+      .array(
+        z.object({
+          name: z.string().trim().min(1).max(255),
+          kind: z.enum(['image', 'file']),
+          thumbnail: z
+            .string()
+            .max(300_000)
+            .regex(/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/, 'Invalid thumbnail')
+            .optional(),
+        }),
+      )
+      .max(10)
+      .optional(),
     // Parent in the message tree (null = root). Drives continue + edit branches.
     parentMessageId: objectId.nullable().optional(),
     // Last frame the client already rendered, for exactly-once reconnects.

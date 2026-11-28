@@ -4,6 +4,8 @@ import { api } from '../lib/api.js';
 import Spinner from '../components/ui/Spinner.jsx';
 import ThemeToggle from '../components/ui/ThemeToggle.jsx';
 import { InstallAppButton } from '../context/PwaInstallContext.jsx';
+import MessageAttachments from '../components/chat/MessageAttachments.jsx';
+import { getMessageDisplay } from '../lib/attachments.js';
 
 export default function SharedChatPage() {
   const { token } = useParams();
@@ -72,21 +74,33 @@ export default function SharedChatPage() {
                 {session?.title || 'Shared chat'}
               </h1>
               <div className="space-y-5">
-                {messages.map((m) => (
-                  <div
-                    key={m.id}
-                    className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                      m.role === 'user'
-                        ? 'ml-8 bg-violet-600 text-white'
-                        : 'mr-8 bg-white text-slate-800 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-700'
-                    }`}
-                  >
-                    <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide opacity-70">
-                      {m.role === 'user' ? 'You' : 'ATOZAS AI'}
-                    </p>
-                    <div className="whitespace-pre-wrap">{m.content}</div>
-                  </div>
-                ))}
+                {messages.map((m) => {
+                  const isUser = m.role === 'user';
+                  // Attachment text is model input; show the attachment instead.
+                  const display = isUser
+                    ? getMessageDisplay(m)
+                    : { text: m.content, attachments: [] };
+                  return (
+                    <div
+                      key={m.id}
+                      className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                        isUser
+                          ? 'ml-8 bg-violet-600 text-white'
+                          : 'mr-8 bg-white text-slate-800 ring-1 ring-slate-200 dark:bg-slate-900 dark:text-slate-100 dark:ring-slate-700'
+                      }`}
+                    >
+                      <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide opacity-70">
+                        {isUser ? 'You' : 'ATOZAS AI'}
+                      </p>
+                      {display.attachments.length > 0 && (
+                        <div className={display.text ? 'mb-2' : ''}>
+                          <MessageAttachments attachments={display.attachments} align="start" />
+                        </div>
+                      )}
+                      {display.text && <div className="whitespace-pre-wrap">{display.text}</div>}
+                    </div>
+                  );
+                })}
               </div>
               <div className="mt-10 text-center">
                 <Link

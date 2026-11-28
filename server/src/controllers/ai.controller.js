@@ -93,6 +93,7 @@ export const streamChat = asyncHandler(async (req, res) => {
     clientMessageId,
     parentMessageId: requestedParentId,
     resumeFromSeq,
+    attachments = [],
   } = req.body;
 
   const conversation = await getOwnedConversation(userId, req.params.id);
@@ -212,6 +213,7 @@ export const streamChat = asyncHandler(async (req, res) => {
         user: userId,
         role: 'user',
         content,
+        attachments,
         status: 'complete',
         parentMessage: parentMessageId || null,
         ...(clientMessageId ? { clientMeta: { clientMessageId } } : {}),
